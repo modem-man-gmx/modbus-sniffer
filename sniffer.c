@@ -1,6 +1,7 @@
 /*
  * A sniffer for the Modbus protocol
  * (c) 2020 Alessandro Righi - released under the MIT license
+ * (c) 2021 vheat - released under the MIT license
  */
 
 #define _DEFAULT_SOURCE
@@ -14,9 +15,12 @@
 #include <stdint.h>
 #include <string.h>
 #include <signal.h>
+#include <time.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/time.h>
+
 
 #define DIE(err) do { perror(err); exit(EXIT_FAILURE); } while (0)
 
@@ -102,7 +106,7 @@ uint16_t crc16_table[] = {
     0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040,
 };
 
-void crc_check(char *buffer, int length)
+int crc_check(uint8_t *buffer, int length)
 {
     uint8_t byte;
     uint16_t crc = 0xFFFF;
@@ -114,10 +118,13 @@ void crc_check(char *buffer, int length)
       crc ^= crc16_table[byte];
    }
 
-   valid_crc = (crc >> 8) == buffer[1] && (crc & 0xFF) == buffer[0];
+   valid_crc = ((crc >> 8) == (buffer[1] & 0xFF))  && ((crc & 0xFF) == (buffer[0] & 0xFF)) ;
 
-   printf("CRC: %04X = %02X%02X [%s]\n", crc, buffer[1], buffer[0], valid_crc ? "OK" : "FAIL");
+   printf("CRC: %04X = %02X%02X [%s]\n", crc, buffer[1] & 0xFF, buffer[0] & 0xFF, valid_crc ? "OK" : "FAIL");
+   return valid_crc;
 }
+
+
 
 void usage(FILE *fp, char *progname, int exit_code)
 {
@@ -339,12 +346,72 @@ void signal_handler()
     rotate_log = 1;
 }
 
+enum cmds {
+		FW = 0x8908,
+		SERIAL_NO = 0x8900,
+		ACTIVE_IMPORT = 0x5000
+};
+
+void dump_buffer(uint8_t *buffer, uint16_t length) {
+	int i;
+	printf("DUMP: ");
+	for (i=0; i < length; i++) {
+		printf(" %02X", (uint8_t)buffer[i]);
+	}
+	printf("\n");
+}
+
+void decode_rsp(uint16_t command, uint8_t *buffer, uint16_t length) {
+	float fvalue;
+	uint64_t lvalue;
+	struct timeval tv;
+	struct tm *timval;
+	char wallclock[32];
+	int off=0;
+	uint32_t serno;
+
+	gettimeofday(&tv, NULL);
+	timval=localtime(&tv.tv_sec);
+    off=strftime(wallclock, sizeof(wallclock)-1,"%Y-%m-%d %H:%M:%S.", timval);
+    snprintf(wallclock+off, sizeof(wallclock-off-1),"%06ld", tv.tv_usec);
+
+	switch( command ) {
+	case FW :
+		printf("%s: Firmware: %s\n", wallclock, buffer);
+		break;
+	case SERIAL_NO :
+		serno=(uint32_t)0 + (buffer[0]<<24) + (buffer[1]<<16) + (buffer[2]<<8) + buffer[3];
+		printf("%s: Serial: %u\n", wallclock, serno);
+		break;
+	case ACTIVE_IMPORT :
+		lvalue =  (uint64_t)0 + ((uint64_t)buffer[0]<<56) + ((uint64_t)buffer[1]<<48)
+		         + ((uint64_t)buffer[2]<<40) + ((uint64_t)buffer[3]<<32)
+				 + ((uint64_t)buffer[4]<<24) + (uint64_t)(buffer[5]<<16)
+				 + ((uint64_t)buffer[6]<<8)  + (uint64_t)buffer[7];
+		fvalue = 0.01 * lvalue;
+		printf("%s: Active import %.2f kWh\n",wallclock, fvalue);
+		break;
+	default:
+		printf("%s: Not supported command %d / 0x%04X\n", wallclock, command, command);
+	}
+}
+
+
+
 int main(int argc, char **argv)
 {
     int port, n_bytes = -1, res, size = 0, log_fd = -1, n_packets = 0;
-    char buffer[MODBUS_MAX_PACKET_SIZE];
+    /* Test vectors, replace by your serial number and crc */
+    /*uint8_t buffer[MODBUS_MAX_PACKET_SIZE] = {0x01, 0x03, 0x04, 0x00, 0xnn, 0xnn, 0xnn, 0xAE, 0x33};*/
+    /*uint8_t buffer[MODBUS_MAX_PACKET_SIZE] = {0x01, 0x03, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0D, 0x5E, 0x10, 0xBF};*/
+    uint8_t buffer[MODBUS_MAX_PACKET_SIZE];
     struct timeval timeout;
     fd_set set;
+	uint16_t command=0;
+	uint16_t length=0;
+
+/*    decode_rsp(ACTIVE_IMPORT, buffer+3, 8);
+    exit(0);*/
 
     signal(SIGUSR1, signal_handler);
 
@@ -388,12 +455,25 @@ int main(int argc, char **argv)
 
         /* captured an entire packet */
         if (size > 0 && (res == 0 || size >= MODBUS_MAX_PACKET_SIZE || n_bytes == 0)) {
-            printf("captured packet %d: length = %d, ", ++n_packets, size);
+            printf("\tcaptured packet %d: length = %d, ", ++n_packets, size);
 
             if (n_packets % max_packet_per_capture == 0)
                 rotate_log = 1;
 
-            crc_check(buffer, size);
+            if (crc_check(buffer, size)) {
+
+            	if ((size == 8) && (buffer[2] != 3)) {
+            		command = (buffer[2]<< 8) + buffer[3];
+            		printf("\treq seen: %u / 0x%04X\n", command, command);
+            	} else if (size == (buffer[2] + 5)) {
+                    length=buffer[2];
+            		printf("\tresp seen for: %d / 0x%04X, length %u\n", command, command, length);
+            		dump_buffer(buffer, size);
+            		decode_rsp(command, buffer+3, length);
+            	} else {
+            		printf("\tinvalid packet, size %d\n", size);
+            	}
+            }
             write_packet_header(log_fd, size);
 
             if (write(log_fd, buffer, size) < 0)
