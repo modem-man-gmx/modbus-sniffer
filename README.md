@@ -38,7 +38,8 @@ I tested the capture on a Raspberry Pi model 3B+. If you also use
 a Raspberry, make sure to enable the hardware UART for better performance
 by disabling the Bluetooth interface.
 
-Note on FTI FT232R and similar USB chips (vheat)
+Note on FTDI FT232R and similar USB chips (vheat)
+
 On using FTDI FT232RL in a simple sniffer mode, so trying to sniff requests and responses, 
 there was no separation from the MODBUS PDUs. It looked a next req PDU started at the middle 
 of a received response.
