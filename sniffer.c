@@ -349,7 +349,8 @@ void signal_handler()
 enum cmds {
 		FW = 0x8908,
 		SERIAL_NO = 0x8900,
-		ACTIVE_IMPORT = 0x5000
+		ACTIVE_IMPORT = 0x5000,
+		CURRENT_L1 = 0x5B0C
 };
 
 void dump_buffer(uint8_t *buffer, uint16_t length) {
@@ -363,6 +364,7 @@ void dump_buffer(uint8_t *buffer, uint16_t length) {
 
 void decode_rsp(uint16_t command, uint8_t *buffer, uint16_t length) {
 	float fvalue;
+	float fvalue1, fvalue2, fvalue3;
 	uint64_t lvalue;
 	struct timeval tv;
 	struct tm *timval;
@@ -382,6 +384,18 @@ void decode_rsp(uint16_t command, uint8_t *buffer, uint16_t length) {
 	case SERIAL_NO :
 		serno=(uint32_t)0 + (buffer[0]<<24) + (buffer[1]<<16) + (buffer[2]<<8) + buffer[3];
 		printf("%s: Serial: %u\n", wallclock, serno);
+		break;
+	case CURRENT_L1 :
+		lvalue =  (uint64_t)0 + ((uint64_t)buffer[0]<<24) + ((uint64_t)buffer[1]<<16)
+		         + ((uint64_t)buffer[2]<<8) + ((uint64_t)buffer[3]<<0);
+		fvalue1 = 0.01 * lvalue;
+		lvalue =  (uint64_t)0 + ((uint64_t)buffer[4]<<24) + ((uint64_t)buffer[5]<<16)
+		         + ((uint64_t)buffer[6]<<8) + ((uint64_t)buffer[7]<<0);
+		fvalue2 = 0.01 * lvalue;
+		lvalue =  (uint64_t)0 + ((uint64_t)buffer[8]<<24) + ((uint64_t)buffer[9]<<16)
+		         + ((uint64_t)buffer[10]<<8) + ((uint64_t)buffer[11]<<0);
+		fvalue3 = 0.01 * lvalue;
+		printf("%s: Current L1: %-.2f A    L2: %-.2f A   L3: %-.2f A  \n", wallclock, fvalue1, fvalue2, fvalue3);
 		break;
 	case ACTIVE_IMPORT :
 		lvalue =  (uint64_t)0 + ((uint64_t)buffer[0]<<56) + ((uint64_t)buffer[1]<<48)
