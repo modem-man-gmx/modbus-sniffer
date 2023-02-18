@@ -60,4 +60,23 @@ Linux kernel tries to optimize load of USB transfers, that's a latency_timer whi
 It's pretty high for modbus communication, so to get better result use the `-l` (`--low-latency`) flag to try to set 
 the serial port automatically to ASYNC_LOW_LATENCY (1ms). This requires root privileges, and it's supported only on Linux.
 Moreover, not all serial adapters may be supported. In case it's not supported the program will print an error and continue in normal mode.
+## Note on FTDI FT232R and similar USB chips (vheat)
+
+On using FTDI FT232RL in a simple sniffer mode, so trying to sniff requests and responses, 
+there was no separation from the MODBUS PDUs. It looked a next req PDU started at the middle 
+of a received response.
+It turned out that this is from a collection timer in Linux kernel, which tries to optimize 
+load of USB transfers. This is located at the usb-serial module and can be impacted by setting
+the latency_timer parameter. This can be done by
+root# echo 1 > /sys/bus/usb-serial/devices/ttyUSB<your number>/latency_timer
+Default of Linux is 16 which means 16 ms collection/latency timer.
+The optimization is Linux is fine for big data transfers, but distracting for small messages 
+like MODBUS PDU.
+To give the full use case:  A device which has a 19200 bd 8E1 format on the MODBUS link.
+So the 3.5 character pause between the MODBUS messages is somewhat  
+11 bits / 19200 bd * 3.5 symbols -> 2 ms
+There for the 1 ms latency_timer always hits a pause.
+The default timer of 1.5 ms timeout for select in sniffer.c will expire now at least once between 
+PDUs and so separate the PDUs.
+Observation shows that this works pretty well. Other speeds and formats need a different alignment.
  

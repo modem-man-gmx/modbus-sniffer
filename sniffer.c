@@ -43,6 +43,7 @@ struct cli_args {
     uint32_t bytes_time_interval_us;
     bool low_latency;
     bool ignore_crc;
+    int max_packet_per_capture;
 };
 
 struct option long_options[] = {
@@ -53,6 +54,7 @@ struct option long_options[] = {
     { "bits",        required_argument, NULL, 'b' },
     { "stop-bits",   required_argument, NULL, 'S' },
     { "interval",    required_argument, NULL, 't' },
+    { "max-packets", required_argument, NULL, 'm' },
     { "low-latency", no_argument,       NULL, 'l' },
     { "help",        no_argument,       NULL, 'h' },
     { "ignore-crc",  no_argument,       NULL, 'i' },
@@ -197,8 +199,9 @@ void usage(FILE *fp, char *progname, int exit_code)
     fprintf(fp, " -b, --bits         number of bits (default 8)\n");
     fprintf(fp, " -P, --parity       parity to use (default 'N')\n");
     fprintf(fp, " -S, --stop-bits    stop bits to use (default 1)\n");
-    fprintf(fp, " -t, --interval     time interval between packets (default 1500)\n");
+    fprintf(fp, " -t, --interval     time interval between packets (default 1500 us)\n");  // <7291.66_us@4800 <3645.833_us@9600, <1822.9166_us@19200, <911.45833_us@38400, ...
     fprintf(fp, " -i, --ignore-crc   dump also brocken packages\n");
+    fprintf(fp, " -m, --max-packets  maximum number of packets in capture file (default 10000)\n");
 
 #ifdef __linux__
     fprintf(fp, " -l, --low-latency  try to enable serial port low-latency mode (Linux-only)\n");
@@ -221,8 +224,9 @@ void parse_args(int argc, char **argv, struct cli_args *args)
     args->bytes_time_interval_us = 1500;
     args->low_latency = false;
     args->ignore_crc = false;
+	args->max_packet_per_capture = 10000;
 
-    while ((opt = getopt_long(argc, argv, "o:p:s:b:P:S:t:hli", long_options, NULL)) >= 0) {
+    while ((opt = getopt_long(argc, argv, "o:p:s:b:P:S:t:hlim:", long_options, NULL)) >= 0) {
         switch (opt) {
         case 'o':
             args->output_file = optarg;
@@ -254,6 +258,9 @@ void parse_args(int argc, char **argv, struct cli_args *args)
         case 'i':
             args->ignore_crc = true;
             break;
+        case 'm':
+            max_packet_per_capture = atoi(optarg);
+            break;
         default:
             usage(stderr, argv[0], EXIT_FAILURE);
         }
@@ -263,6 +270,7 @@ void parse_args(int argc, char **argv, struct cli_args *args)
     fprintf(stderr, "serial port: %s\n", args->serial_port);
     fprintf(stderr, "port type: %d%c%d %d baud\n", args->bits, args->parity, args->stop_bits, args->speed);
     fprintf(stderr, "time interval: %d\n", args->bytes_time_interval_us);
+    fprintf(stderr, "maximum packets in capture: %d", max_packet_per_capture);
 }
 
 /* https://blog.mbedded.ninja/programming/operating-systems/linux/linux-serial-ports-using-c-cpp */
@@ -428,6 +436,13 @@ void signal_handler()
     rotate_log = 1;
 }
 
+enum cmds {
+		FW = 0x8908,
+		SERIAL_NO = 0x8900,
+		ACTIVE_IMPORT = 0x5000,
+		CURRENT_L1 = 0x5B0C
+};
+
 void dump_buffer(uint8_t *buffer, uint16_t length)
 {
 	int i;
@@ -438,6 +453,57 @@ void dump_buffer(uint8_t *buffer, uint16_t length)
 	fprintf(stderr, "\n");
 }
 
+void decode_rsp(uint16_t command, uint8_t *buffer, uint16_t length)
+{
+	float fvalue;
+	float fvalue1, fvalue2, fvalue3;
+	uint64_t lvalue;
+	struct timeval tv;
+	struct tm *timval;
+	char wallclock[32];
+	int off=0;
+	uint32_t serno;
+
+	gettimeofday(&tv, NULL);
+	timval=localtime(&tv.tv_sec);
+    off=strftime(wallclock, sizeof(wallclock)-1,"%Y-%m-%d %H:%M:%S.", timval);
+    snprintf(wallclock+off, sizeof(wallclock-off-1),"%06ld", tv.tv_usec);
+
+	switch( command ) {
+	case FW :
+		printf("%s: Firmware: %s\n", wallclock, buffer);
+		break;
+	case SERIAL_NO :
+		serno=(uint32_t)0 + (buffer[0]<<24) + (buffer[1]<<16) + (buffer[2]<<8) + buffer[3];
+		printf("%s: Serial: %u\n", wallclock, serno);
+		break;
+	case CURRENT_L1 :
+		lvalue =  (uint64_t)0 + ((uint64_t)buffer[0]<<24) + ((uint64_t)buffer[1]<<16)
+		         + ((uint64_t)buffer[2]<<8) + ((uint64_t)buffer[3]<<0);
+		fvalue1 = 0.01 * lvalue;
+		lvalue =  (uint64_t)0 + ((uint64_t)buffer[4]<<24) + ((uint64_t)buffer[5]<<16)
+		         + ((uint64_t)buffer[6]<<8) + ((uint64_t)buffer[7]<<0);
+		fvalue2 = 0.01 * lvalue;
+		lvalue =  (uint64_t)0 + ((uint64_t)buffer[8]<<24) + ((uint64_t)buffer[9]<<16)
+		         + ((uint64_t)buffer[10]<<8) + ((uint64_t)buffer[11]<<0);
+		fvalue3 = 0.01 * lvalue;
+		printf("%s: Current L1: %-.2f A    L2: %-.2f A   L3: %-.2f A  \n", wallclock, fvalue1, fvalue2, fvalue3);
+		break;
+	case ACTIVE_IMPORT :
+		lvalue =  (uint64_t)0 + ((uint64_t)buffer[0]<<56) + ((uint64_t)buffer[1]<<48)
+		         + ((uint64_t)buffer[2]<<40) + ((uint64_t)buffer[3]<<32)
+				 + ((uint64_t)buffer[4]<<24) + (uint64_t)(buffer[5]<<16)
+				 + ((uint64_t)buffer[6]<<8)  + (uint64_t)buffer[7];
+		fvalue = 0.01 * lvalue;
+		printf("%s: Active import %.2f kWh\n",wallclock, fvalue);
+		break;
+	default:
+		printf("%s: Not supported command %d / 0x%04X\n", wallclock, command, command);
+	}
+}
+
+
+
 int main(int argc, char **argv)
 {
     struct cli_args args = {0};
@@ -447,6 +513,8 @@ int main(int argc, char **argv)
     struct timeval timeout;
     fd_set set;
     FILE *log_fp = NULL;
+	uint16_t command=0;
+	uint16_t length=0;
 
     signal(SIGUSR1, signal_handler);
 
@@ -491,8 +559,21 @@ int main(int argc, char **argv)
         if (size > 0 && (res == 0 || size >= MODBUS_MAX_PACKET_SIZE || n_bytes == 0)) {
             fprintf(stderr, "captured packet %d: length = %zu, ", ++n_packets, size);
 
+            if (n_packets % max_packet_per_capture == 0)
+                rotate_log = 1;
+
             if (crc_check(buffer, size) || args.ignore_crc) {
-                dump_buffer(buffer, size);
+            	if ((size == 8) && (buffer[2] != 3)) {
+            		command = (buffer[2]<< 8) + buffer[3];
+            		printf("\treq seen: %u / 0x%04X\n", command, command);
+            	} else if (size == (buffer[2] + 5)) {
+                    length=buffer[2];
+            		printf("\tresp seen for: %d / 0x%04X, length %u\n", command, command, length);
+                    dump_buffer(buffer, size);
+            		decode_rsp(command, buffer+3, length);
+            	} else {
+            		printf("\tinvalid packet, size %d\n", size);
+            	}
             }
             write_packet_header(log_fp, size);
 
