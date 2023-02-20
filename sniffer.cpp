@@ -633,6 +633,10 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
             length -= Reg.len;
             Idx += Reg.len;
           }
+        } else {
+          fprintf(stderr, "[????] incomplete! need:%u, had %u\n", BytesAnswered, length);
+          Remaining = BytesAnswered - length;
+          return DECODE_NEEDS_DATA; // failed a bit
         }
     }
 
@@ -655,7 +659,7 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
       return DECODE_DONE_WELL; // all fine
     }
 
-    fprintf(stderr, "[????] incomplete\n");
+    fprintf(stderr, "[????] incomplete? had:%u, needed more.\n", length);
     Remaining=length;
     return DECODE_NEEDS_DATA; // failed a bit
 }
@@ -751,7 +755,10 @@ int main(int argc, char **argv)
 
             // (DECODE_HAS_DATA_LEFT==res) || (DECODE_DONE_WELL==res)
             // Remaining tells, how much is over (likely parts of next package)
-            fprintf(stderr, "DECODE_HAS_DATA_LEFT length = %lu", Remaining);
+            if (Remaining) {
+                fprintf(stderr, "DECODE_HAS_DATA_LEFT length = %lu\n", Remaining);
+            }
+
             if (crc_check(buffer, size) || args.ignore_crc) {
               /* was not able to decode? then at least dump it */
               dump_buffer(buffer, size);
@@ -765,9 +772,10 @@ int main(int argc, char **argv)
             fflush(log_fp);
 
             if (DECODE_HAS_DATA_LEFT==res){
-              fprintf(stderr, "DECODE_HAS_DATA_LEFT length = %lu, had = %lu, move it to buffer start", Remaining, size);
-              size -= Remaining;
-              memmove(buffer,buffer+size,size);
+              size_t eaten = size - Remaining;
+              fprintf(stderr, "DECODE_HAS_DATA_LEFT length = %lu of %lu, move it <- %lu to buffer start\n", Remaining, size, eaten);
+              memmove(buffer,buffer+eaten,Remaining);
+              size = Remaining;
             } else {
               size = 0;
             }
