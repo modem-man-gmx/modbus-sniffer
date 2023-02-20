@@ -1,8 +1,15 @@
-#CFLAGS=-O2 -std=c99 -Wall -Wextra -pedantic
 CXXFLAGS=-O2 -std=c++11 -Wall -Wextra -pedantic
+LDFLAGS=
 
-sniffer: sniffer.cpp
-	$(CXX) $(CXXFLAGS) -o $@ $<
+INCSEARCH=-I.
+LIBSEARCH=
+LIB_LINK=
+
+sniffer: sniffer.o read_modbus_definitions.o
+	$(CXX) $(CXXFLAGS) $^ $(LDFLAGS) $(LIBSEARCH) $(LIB_LINK) -o $@
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $(INCSEARCH) -c $<
 
 clean:
-	rm -f sniffer
+	rm -f sniffer sniffer.o read_modbus_definitions.o

@@ -26,6 +26,8 @@
 #include <linux/serial.h>
 #endif /*__linux__*/
 
+#include "read_modbus_definitions.h"
+
 #define DIE(err) do { perror(err); exit(EXIT_FAILURE); } while (0)
 
 /*
@@ -44,6 +46,8 @@ struct cli_args {
     bool low_latency;
     bool ignore_crc;
     int max_packet_per_capture;
+    const char* definition_cfg;
+    const char* commands_cfg;
 };
 
 struct option long_options[] = {
@@ -58,6 +62,8 @@ struct option long_options[] = {
     { "low-latency", no_argument,       NULL, 'l' },
     { "help",        no_argument,       NULL, 'h' },
     { "ignore-crc",  no_argument,       NULL, 'i' },
+    { "registers-def",optional_argument,NULL, 'r' },
+    { "commands-def",optional_argument, NULL, 'c' },
     { NULL,          0,                 NULL,  0  },
 };
 
@@ -193,16 +199,18 @@ void usage(FILE *fp, char *progname, int exit_code)
 
     fprintf(fp, "Usage: %s %n[-hl] [-o output] [-p port] [-s speed]\n", progname, &n);
     fprintf(fp, "%*c[-P parity] [-S stop_bits] [-b bits]\n\n", n, ' ');
-    fprintf(fp, " -h, --help         print help like this\n");
-    fprintf(fp, " -o, --output       output file to use (defaults to stdout, file will be truncated if already existing)\n");
-    fprintf(fp, " -p, --serial-port  serial port to use\n");
-    fprintf(fp, " -s, --speed        serial port speed (default 9600)\n");
-    fprintf(fp, " -b, --bits         number of bits (default 8)\n");
-    fprintf(fp, " -P, --parity       parity to use (default 'N')\n");
-    fprintf(fp, " -S, --stop-bits    stop bits to use (default 1)\n");
-    fprintf(fp, " -t, --interval     time interval between packets (default 1500 us)\n");  // <7291.66_us@4800 <3645.833_us@9600, <1822.9166_us@19200, <911.45833_us@38400, ...
-    fprintf(fp, " -i, --ignore-crc   dump also broken packages\n");
-    fprintf(fp, " -m, --max-packets  maximum number of packets in capture file (default 10000)\n");
+    fprintf(fp, " -h, --help          print help like this\n");
+    fprintf(fp, " -o, --output        output file to use (defaults to stdout, file will be truncated if already existing)\n");
+    fprintf(fp, " -p, --serial-port   serial port to use\n");
+    fprintf(fp, " -s, --speed         serial port speed (default 9600)\n");
+    fprintf(fp, " -b, --bits          number of bits (default 8)\n");
+    fprintf(fp, " -P, --parity        parity to use (default 'N')\n");
+    fprintf(fp, " -S, --stop-bits     stop bits to use (default 1)\n");
+    fprintf(fp, " -t, --interval      time interval between packets (default 1500 us)\n");  // <7291.66_us@4800 <3645.833_us@9600, <1822.9166_us@19200, <911.45833_us@38400, ...
+    fprintf(fp, " -i, --ignore-crc    dump also broken packages\n");
+    fprintf(fp, " -m, --max-packets   maximum number of packets in capture file (default 10000)\n");
+    fprintf(fp, " -r, --registers-def definition file with modbus registers specification\n");
+    fprintf(fp, " -c, --commands-def  definition file with modbus commands specification\n");
 
 #ifdef __linux__
     fprintf(fp, " -l, --low-latency  try to enable serial port low-latency mode (Linux-only)\n");
@@ -226,8 +234,11 @@ void parse_args(int argc, char **argv, struct cli_args *args)
     args->low_latency = false;
     args->ignore_crc = false;
     args->max_packet_per_capture = 10000;
+    args->definition_cfg = nullptr;
+    args->commands_cfg = nullptr;
 
-    while ((opt = getopt_long(argc, argv, "o:p:s:b:P:S:t:hlim:", long_options, NULL)) >= 0) {
+
+    while ((opt = getopt_long(argc, argv, "o:p:s:b:P:S:t:hlim:r:c:", long_options, NULL)) >= 0) {
         switch (opt) {
         case 'o':
             args->output_file = optarg;
@@ -262,6 +273,12 @@ void parse_args(int argc, char **argv, struct cli_args *args)
         case 'm':
             args->max_packet_per_capture = atoi(optarg);
             break;
+        case 'r':
+            args->definition_cfg = optarg;
+            break;
+        case 'c':
+            args->commands_cfg = optarg;
+            break;
         default:
             usage(stderr, argv[0], EXIT_FAILURE);
         }
@@ -272,6 +289,10 @@ void parse_args(int argc, char **argv, struct cli_args *args)
     fprintf(stderr, "port type: %d%c%d %d baud\n", args->bits, args->parity, args->stop_bits, args->speed);
     fprintf(stderr, "time interval: %d\n", args->bytes_time_interval_us);
     fprintf(stderr, "maximum packets in capture: %d\n", args->max_packet_per_capture);
+    if (args->commands_cfg)
+      fprintf(stderr, "reading command definition from: %s\n", args->commands_cfg );
+    if (args->definition_cfg)
+      fprintf(stderr, "reading register definition from: %s\n", args->definition_cfg );
 }
 
 /* https://blog.mbedded.ninja/programming/operating-systems/linux/linux-serial-ports-using-c-cpp */
@@ -450,8 +471,90 @@ void dump_buffer(uint8_t *buffer, uint16_t length)
 	fprintf(stderr, "\n");
 }
 
+
+int decode_buffer(uint8_t *buffer, uint16_t length, const CommandNames_t& CommandsByNum, const RegisterDefinition_t& RegistersByNum, int& isAnswer, uint16_t& LastRegNum)
+{
+	int res=1, i;
+    uint16_t BytesAnswered=0, RegCount=0;
+    size_t Index=0;
+    
+	fprintf(stderr, "\tDECODE: ");
+
+    if (length-Index>=1) {
+      fprintf(stderr, "%c ID: %02u (0x%02x), ", (isAnswer)?'!':'?', buffer[Index], buffer[Index] );
+      Index++;
+    }
+
+    if (length-Index>=1) {
+       const auto found = CommandsByNum.find(buffer[Index]);
+       if (CommandsByNum.end() != found) {
+         fprintf(stderr, "%s, ", found->second.Name.c_str());
+       } else {
+         fprintf(stderr, "Cmd%02X, ", (uint8_t)buffer[1]);
+       }
+      Index++;
+    }
+
+    if (length-Index>=2 && !isAnswer) { // <-- REQUEST PACKAGE
+      LastRegNum = (((uint8_t)buffer[Index]) << 8) + (((uint8_t)buffer[Index+1]) & 0xFF);
+      const auto found = RegistersByNum.find(LastRegNum);
+      if (RegistersByNum.end() != found) {
+        fprintf(stderr, "%s, ", found->second.Name.c_str());
+      } else {
+        fprintf(stderr, "Reg%04X, ", LastRegNum);
+      }
+      Index+=2;
+    }
+    else if (length-Index>=1 && isAnswer) { // --> ANSWER PACKAGE
+      BytesAnswered = (uint8_t)buffer[Index];
+      RegCount = BytesAnswered / 2;
+      fprintf(stderr, "%u Bytes, ", BytesAnswered);
+      Index++;
+    }
+
+    if (length-Index>=2 && !isAnswer) { // <-- REQUEST PACKAGE
+      RegCount = (((uint8_t)buffer[Index]) << 8) + ((uint8_t)buffer[Index+1]);
+      BytesAnswered = 2 * RegCount;
+      fprintf(stderr, "%u Registers (%u Bytes), ", RegCount, BytesAnswered);
+      Index+=2;
+      isAnswer=1;
+    }
+    else if (length-Index>=BytesAnswered && isAnswer) { // --> ANSWER PACKAGE
+      // RegCount times dump...
+      for( uint16_t RegNo = LastRegNum; RegNo < LastRegNum + RegCount; RegNo++ )
+      {
+        const auto found = RegistersByNum.find(RegNo);
+        if (RegistersByNum.end() != found) {
+          fprintf(stderr, "%s: ", found->second.Name.c_str());
+        } else {
+          fprintf(stderr, "Reg%04X: ", RegNo);
+        }
+        fprintf(stderr, "xx yy "); // tbd data interpretation and dump
+      }
+    }
+
+    if (length-Index>=2) {
+      fprintf(stderr, "[%02X%02X]\n", (uint8_t)buffer[6], (uint8_t)buffer[7]);
+      if (isAnswer) isAnswer=0; // Answer Package done, next is response
+      else isAnswer=1;
+      return 0; // all fine
+    } else {
+      fprintf(stderr, "[????] incomplete\n");
+      return 1; // failed a bit
+    }
+
+	for (i=0; i < length; i++) {
+		fprintf(stderr, " %02X", (uint8_t)buffer[i]);
+	}
+	fprintf(stderr, "\n");
+    return res;
+}
+
+
 int main(int argc, char **argv)
 {
+  try
+  {
     struct cli_args args = {};
     int port, n_bytes = -1, res, n_packets = 0;
     size_t size = 0;
@@ -466,10 +569,32 @@ int main(int argc, char **argv)
 
     fprintf(stderr, "starting modbus sniffer\n");
 
+    CommandNames_t CommandsByNum;
+    if (args.commands_cfg) {
+      fprintf(stderr, "reading %s: ", args.commands_cfg );
+      CommandsByNum = read_ModbusCommands( args.commands_cfg );
+      fprintf(stderr, "OK\n" );
+    } else {
+      fprintf(stderr, "  no command decoding wanted.\n" );
+    }
+
+    RegisterDefinition_t RegistersByNum;
+    if (args.definition_cfg) {
+      fprintf(stderr, "reading %s: ", args.definition_cfg );
+      RegistersByNum = read_ModbusRegisterDefinitions( args.definition_cfg );
+      fprintf(stderr, "OK\n" );
+    } else {
+      fprintf(stderr, "  no register decoding wanted.\n" );
+    }
+ 
+
     if ((port = open(args.serial_port, O_RDONLY)) < 0)
         DIE("open port");
 
     configure_serial_port(port, &args);
+
+    int isAnswer=0;
+    uint16_t LastRegNum=0;
 
     while (n_bytes != 0) {
         if (rotate_log || !log_fp) {
@@ -507,7 +632,10 @@ int main(int argc, char **argv)
                 rotate_log = 1;
 
             if (crc_check(buffer, size) || args.ignore_crc) {
+              if (0!=decode_buffer(buffer, size, CommandsByNum, RegistersByNum, isAnswer, LastRegNum)) {
+                /* was not able to decode? then at least dump it */
                 dump_buffer(buffer, size);
+              }  
             }
             write_packet_header(log_fp, size);
 
@@ -518,6 +646,16 @@ int main(int argc, char **argv)
             size = 0;
         }
     }
-
-    return EXIT_SUCCESS;
+  }
+  catch(std::exception &e)
+  {
+    fprintf(stderr, "Some unexpected things happened: %s\n", e.what());
+    exit(EXIT_FAILURE);
+  }
+  catch(...)
+  {
+    fprintf(stderr, "Something unknown got wrong. Could not see, what.\n");
+    exit(EXIT_FAILURE);
+  }
+  return EXIT_SUCCESS;
 }

@@ -2,3 +2,6 @@ sniffer
 /*.pcap
 /.Codelite_Workspace
 *.exe
+/decode_breeder
+/*.o
+/*.stackdump
