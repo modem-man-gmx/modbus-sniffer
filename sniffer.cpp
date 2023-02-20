@@ -770,13 +770,12 @@ int main(int argc, char **argv)
 
             write_packet_header(log_fp, size);
 
-            if (fwrite(buffer, 1, eaten, log_fp) != size)
+            if (fwrite(buffer, 1, eaten, log_fp) != eaten)
                 DIE("write pcap");
 
             fflush(log_fp);
 
             if (DECODE_HAS_DATA_LEFT==res){
-              size_t eaten = size - Remaining;
               fprintf(stderr, "DECODE_HAS_DATA_LEFT length = %lu of %lu, move it <- %lu to buffer start\n", Remaining, size, eaten);
               memmove(buffer,buffer+eaten,Remaining);
               size = Remaining;
