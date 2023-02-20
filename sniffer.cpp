@@ -746,6 +746,8 @@ int main(int argc, char **argv)
             if (n_packets % args.max_packet_per_capture == 0)
                 rotate_log = 1;
 
+            dump_buffer(buffer, size);
+
             int res = decode_buffer(buffer, size, CommandsByNum, RegistersByNum, isAnswer, LastRegNum, Remaining);
             if (DECODE_NEEDS_DATA==res) {
                 // Remaining could say, how much is missing
@@ -759,14 +761,16 @@ int main(int argc, char **argv)
                 fprintf(stderr, "DECODE_HAS_DATA_LEFT length = %lu\n", Remaining);
             }
 
-            if (crc_check(buffer, size) || args.ignore_crc) {
+            size_t eaten = size - Remaining;
+            if (crc_check(buffer, eaten) || args.ignore_crc) {
               /* was not able to decode? then at least dump it */
-              dump_buffer(buffer, size);
+              dump_buffer(buffer, eaten);
+              dump_buffer(buffer+eaten, Remaining);
             }
 
             write_packet_header(log_fp, size);
 
-            if (fwrite(buffer, 1, size, log_fp) != size)
+            if (fwrite(buffer, 1, eaten, log_fp) != size)
                 DIE("write pcap");
 
             fflush(log_fp);
