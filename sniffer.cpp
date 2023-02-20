@@ -472,82 +472,192 @@ void dump_buffer(uint8_t *buffer, uint16_t length)
 }
 
 
-int decode_buffer(uint8_t *buffer, uint16_t length, const CommandNames_t& CommandsByNum, const RegisterDefinition_t& RegistersByNum, int& isAnswer, uint16_t& LastRegNum)
+# define DECODE_DONE_WELL 0
+# define DECODE_NEEDS_DATA 1
+# define DECODE_HAS_DATA_LEFT -1
+int decode_buffer(uint8_t *buffer, uint16_t length, 
+                  const CommandNames_t& CommandsByNum, 
+                  const RegisterDefinition_t& RegistersByNum, 
+                  int& isAnswer, 
+                  uint16_t& LastRegNum,
+                  size_t& Remaining)
 {
-	int res=1, i;
     uint16_t BytesAnswered=0, RegCount=0;
-    size_t Index=0;
+    size_t Idx=0;
+    ModbusCommand_t Cmd;
+    ModbusRegister_t Reg;
     
 	fprintf(stderr, "\tDECODE: ");
 
-    if (length-Index>=1) {
-      fprintf(stderr, "%c ID: %02u (0x%02x), ", (isAnswer)?'!':'?', buffer[Index], buffer[Index] );
-      Index++;
+    /* === Block A, common for Request and Answer === */
+    /* --- Block A.1: the ID of the client being asked for or answering back --- */
+    if (length>=1) {
+      uint8_t ID = buffer[Idx];
+      fprintf(stderr, "%c ID: %02u (0x%02x), ", (isAnswer)?'!':'?', ID, ID );
+      length--;Idx++;
     }
 
-    if (length-Index>=1) {
-       const auto found = CommandsByNum.find(buffer[Index]);
-       if (CommandsByNum.end() != found) {
-         fprintf(stderr, "%s, ", found->second.Name.c_str());
-       } else {
-         fprintf(stderr, "Cmd%02X, ", (uint8_t)buffer[1]);
-       }
-      Index++;
-    }
-
-    if (length-Index>=2 && !isAnswer) { // <-- REQUEST PACKAGE
-      LastRegNum = (((uint8_t)buffer[Index]) << 8) + (((uint8_t)buffer[Index+1]) & 0xFF);
-      const auto found = RegistersByNum.find(LastRegNum);
-      if (RegistersByNum.end() != found) {
-        fprintf(stderr, "%s, ", found->second.Name.c_str());
+    /* --- Block A.2: the Modbus Command --- */
+    if (length>=1) {
+      uint8_t Command = buffer[Idx];
+      const auto found = CommandsByNum.find(Command);
+      if (CommandsByNum.end() != found) {
+        Cmd = found->second;
+        fprintf(stderr, "%s, ", Cmd.Name.c_str());
       } else {
-        fprintf(stderr, "Reg%04X, ", LastRegNum);
+        fprintf(stderr, "Cmd%02X, ", Command);
       }
-      Index+=2;
-    }
-    else if (length-Index>=1 && isAnswer) { // --> ANSWER PACKAGE
-      BytesAnswered = (uint8_t)buffer[Index];
-      RegCount = BytesAnswered / 2;
-      fprintf(stderr, "%u Bytes, ", BytesAnswered);
-      Index++;
+      length--;Idx++;
     }
 
-    if (length-Index>=2 && !isAnswer) { // <-- REQUEST PACKAGE
-      RegCount = (((uint8_t)buffer[Index]) << 8) + ((uint8_t)buffer[Index+1]);
-      BytesAnswered = 2 * RegCount;
-      fprintf(stderr, "%u Registers (%u Bytes), ", RegCount, BytesAnswered);
-      Index+=2;
-      isAnswer=1;
-    }
-    else if (length-Index>=BytesAnswered && isAnswer) { // --> ANSWER PACKAGE
-      // RegCount times dump...
-      for( uint16_t RegNo = LastRegNum; RegNo < LastRegNum + RegCount; RegNo++ )
-      {
-        const auto found = RegistersByNum.find(RegNo);
-        if (RegistersByNum.end() != found) {
-          fprintf(stderr, "%s: ", found->second.Name.c_str());
-        } else {
-          fprintf(stderr, "Reg%04X: ", RegNo);
+    /* === Block B, Request-Type Packets === */
+    if (!isAnswer) { // <-- REQUEST PACKAGE
+      /* --- Block B.1: the (first) register we want to read --- */
+        if (length>=2) {
+          uint8_t RegHi = buffer[Idx];
+          uint8_t RegLo = buffer[Idx+1];
+          LastRegNum = (RegHi << 8) + RegLo;
+          const auto found = RegistersByNum.find(LastRegNum);
+          if (RegistersByNum.end() != found) {
+            Reg = found->second;
+            fprintf(stderr, "%s, ", Reg.Name.c_str());
+          } else {
+            fprintf(stderr, "Reg%04X, ", LastRegNum);
+          }
+          length-=2;Idx+=2;
         }
-        fprintf(stderr, "xx yy "); // tbd data interpretation and dump
+        /* --- Block B.2: the amount of 16-bit register we want to read --- */
+        if (length>=2) {
+          uint8_t CntHi = buffer[Idx];
+          uint8_t CntLo = buffer[Idx+1];
+          RegCount = (CntHi << 8) + CntLo;
+          BytesAnswered = 2 * RegCount;
+          if( RegCount <= Cmd.maxAtOnce ) {
+            fprintf(stderr, "%u Registers (%u Bytes), ", RegCount, BytesAnswered);
+          } else {
+            fprintf(stderr, "invalid attempt to request %u Registers (%u Bytes). ", RegCount, BytesAnswered);
+          }
+          length-=2;Idx+=2;
+        }
+    }
+    /* === Block C, Answer-Type Packets === */
+    else if (isAnswer) {
+        /* --- Block C.1: the amount of Bytes (2* 16-Bit-Registers) the message contains --- */
+        if (length>=1) {
+          uint8_t Bytes = buffer[Idx];
+          BytesAnswered = Bytes;
+          RegCount = BytesAnswered / 2;
+          fprintf(stderr, "%u Bytes, ", BytesAnswered);
+          length--;Idx++;
+        }
+        /* --- Block C.2: the 1..RegCount Register(s) content the message contains --- */
+        if (length>=BytesAnswered) {
+          // RegCount times dump...
+          for( uint16_t RegNo = LastRegNum; RegNo < LastRegNum + RegCount; RegNo++ )
+          {
+            const auto found = RegistersByNum.find(RegNo);
+            if (RegistersByNum.end() != found) {
+              Reg = found->second;
+              fprintf(stderr, "%s: ", found->second.Name.c_str());
+            } else {
+              fprintf(stderr, "Reg%04X: ", RegNo);
+            }
+
+            if( Reg.len>length-2 ) {
+              fprintf(stderr, "invalid attempt to dump %u Bytes, have only %u. ", static_cast<uint16_t>(BytesAnswered), length);
+            }
+
+            if (Reg.DataType==std::string("void")) {
+            }
+            else if (Reg.DataType==std::string("dump")) {
+              for (int i=0; i < Reg.len; i++) {
+                fprintf(stderr, "%02X ", (uint8_t)buffer[Idx+i]);
+              }
+            }
+            else if (Reg.DataType==std::string("bit")) {
+              fprintf(stderr, "%c ", (buffer[Idx]>0) ? '1' : '0');
+            }
+            else if (Reg.DataType==std::string("bits")) {
+              for (int i=0; i < (7+Reg.len)/8; i++) {
+                uint8_t Byte = buffer[Idx+i];
+                for (int b=0; i < 8; b++) {
+                  fprintf(stderr, "%c", ((Byte) & (1<<b)) ? '1' : '0' );
+                }
+              }
+            }
+            else if (Reg.DataType==std::string("uint8_t")) {
+              uint8_t Byte = static_cast<uint8_t>(buffer[Idx]);
+              fprintf(stderr, "%ud ", static_cast<uint16_t>(Byte) );
+            }
+            else if (Reg.DataType==std::string("int8_t")) {
+              int8_t Byte = static_cast<int8_t>(buffer[Idx]);
+              fprintf(stderr, "%d ", static_cast<int16_t>(Byte) );
+            }
+            else if (Reg.DataType==std::string("uint16_t")) {
+              uint8_t ValHi = buffer[Idx];
+              uint8_t ValLo = buffer[Idx+1];
+              uint16_t Value = (ValHi << 8) + ValLo;
+              fprintf(stderr, "%ud ", Value );
+            }
+            else if (Reg.DataType==std::string("int16_t")) {
+              uint8_t ValHi = buffer[Idx];
+              uint8_t ValLo = buffer[Idx+1];
+              uint16_t Value = (ValHi << 8) + ValLo;
+              fprintf(stderr, "%d ", static_cast<int16_t>(Value) );
+            }
+            else if (Reg.DataType==std::string("uint32_t")) {
+              uint8_t ValA = buffer[Idx];
+              uint8_t ValB = buffer[Idx+1];
+              uint8_t ValC = buffer[Idx+2];
+              uint8_t ValD = buffer[Idx+3];
+              uint32_t Value = (ValA << 24) + (ValB << 16) + (ValC << 8) + ValD;
+              fprintf(stderr, "%ul ", Value );
+            }
+            else if (Reg.DataType==std::string("int32_t")) {
+              uint8_t ValA = buffer[Idx];
+              uint8_t ValB = buffer[Idx+1];
+              uint8_t ValC = buffer[Idx+2];
+              uint8_t ValD = buffer[Idx+3];
+              uint32_t Value = (ValA << 24) + (ValB << 16) + (ValC << 8) + ValD;
+              fprintf(stderr, "%d ", static_cast<int32_t>(Value) );
+            }
+            else if (Reg.DataType==std::string("float")) {
+              uint8_t ValA = buffer[Idx];
+              uint8_t ValB = buffer[Idx+1];
+              uint8_t ValC = buffer[Idx+2];
+              uint8_t ValD = buffer[Idx+3];
+              uint32_t Value = (ValA << 24) + (ValB << 16) + (ValC << 8) + ValD;
+              float *pFloat = reinterpret_cast<float*>(&Value);
+              fprintf(stderr, "%f ", *pFloat );
+            }
+            length -= Reg.len;
+            Idx += Reg.len;
+          }
+        }
+    }
+
+    /* === Block D, Closing Checksum === */
+    if (length>=2) {
+      uint8_t CrcHi = buffer[Idx];
+      uint8_t CrcLo = buffer[Idx+1];
+      uint16_t CRC = (CrcHi << 8) + CrcLo;
+      fprintf(stderr, "[%04X]\n", CRC);
+      
+      // Answer Package done, next is response? Or vvs?
+      isAnswer = (isAnswer) ? 0 : 1;
+      length-=2;Idx++;
+
+      if(length>2) {
+        Remaining=length;
+        return DECODE_HAS_DATA_LEFT; // perhaps next packet connected?
       }
+      Remaining=0;
+      return DECODE_DONE_WELL; // all fine
     }
 
-    if (length-Index>=2) {
-      fprintf(stderr, "[%02X%02X]\n", (uint8_t)buffer[6], (uint8_t)buffer[7]);
-      if (isAnswer) isAnswer=0; // Answer Package done, next is response
-      else isAnswer=1;
-      return 0; // all fine
-    } else {
-      fprintf(stderr, "[????] incomplete\n");
-      return 1; // failed a bit
-    }
-
-	for (i=0; i < length; i++) {
-		fprintf(stderr, " %02X", (uint8_t)buffer[i]);
-	}
-	fprintf(stderr, "\n");
-    return res;
+    fprintf(stderr, "[????] incomplete\n");
+    Remaining=length;
+    return DECODE_NEEDS_DATA; // failed a bit
 }
 
 
@@ -595,6 +705,7 @@ int main(int argc, char **argv)
 
     int isAnswer=0;
     uint16_t LastRegNum=0;
+    size_t Remaining=0;
 
     while (n_bytes != 0) {
         if (rotate_log || !log_fp) {
@@ -616,7 +727,7 @@ int main(int argc, char **argv)
         if ((res = select(port + 1, &set, NULL, NULL, &timeout)) < 0 && errno != EINTR)
             DIE("select");
 
-        /* there is something to read...  */
+        /* there is something to read... if more than 32 Byte and using an USB/FTDI dongle, you'll likely get 32 byte chunks :-( */
         if (res > 0) {
             if ((n_bytes = read(port, buffer + size, MODBUS_MAX_PACKET_SIZE - size)) < 0)
                 DIE("read port");
@@ -631,21 +742,38 @@ int main(int argc, char **argv)
             if (n_packets % args.max_packet_per_capture == 0)
                 rotate_log = 1;
 
-            if (crc_check(buffer, size) || args.ignore_crc) {
-              if (0!=decode_buffer(buffer, size, CommandsByNum, RegistersByNum, isAnswer, LastRegNum)) {
-                /* was not able to decode? then at least dump it */
-                dump_buffer(buffer, size);
-              }  
+            int res = decode_buffer(buffer, size, CommandsByNum, RegistersByNum, isAnswer, LastRegNum, Remaining);
+            if (DECODE_NEEDS_DATA==res) {
+                // Remaining could say, how much is missing
+                fprintf(stderr, "DECODE_NEEDS_DATA length = %lu, had = %lu", Remaining, size);
+                continue;
             }
+
+            // (DECODE_HAS_DATA_LEFT==res) || (DECODE_DONE_WELL==res)
+            // Remaining tells, how much is over (likely parts of next package)
+            fprintf(stderr, "DECODE_HAS_DATA_LEFT length = %lu", Remaining);
+            if (crc_check(buffer, size) || args.ignore_crc) {
+              /* was not able to decode? then at least dump it */
+              dump_buffer(buffer, size);
+            }
+
             write_packet_header(log_fp, size);
 
             if (fwrite(buffer, 1, size, log_fp) != size)
                 DIE("write pcap");
 
             fflush(log_fp);
-            size = 0;
-        }
-    }
+
+            if (DECODE_HAS_DATA_LEFT==res){
+              fprintf(stderr, "DECODE_HAS_DATA_LEFT length = %lu, had = %lu, move it to buffer start", Remaining, size);
+              size -= Remaining;
+              memmove(buffer,buffer+size,size);
+            } else {
+              size = 0;
+            }
+
+        } // end-if of buffer timed out (unreliable on some hardware) || buffer is too full.
+    } // while nothing got read
   }
   catch(std::exception &e)
   {
