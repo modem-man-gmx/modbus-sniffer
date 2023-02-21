@@ -637,6 +637,9 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
               float *pFloat = reinterpret_cast<float*>(&Value);
               fprintf(stderr, "%f ", *pFloat );
             }
+            if (RegNo < LastRegNum + RegCount) {
+              fprintf(stderr, "\n\t" );
+            }
             length -= Reg.len;
             Idx += Reg.len;
           }
@@ -658,7 +661,7 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
       isAnswer = (isAnswer) ? 0 : 1;
       length-=2;Idx++;
 
-      if(length>2) {
+      if(length>0) {
         Remaining=length;
         return DECODE_HAS_DATA_LEFT; // perhaps next packet connected?
       }
