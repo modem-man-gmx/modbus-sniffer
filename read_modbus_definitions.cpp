@@ -4,13 +4,17 @@
 #include <iostream>
 #include <iomanip>
 
+using std::endl;
+using std::string;
+
 #include "read_modbus_definitions.h"
 
-inline std::string& ltrim(std::string& s, const char* t = " \t\n\r\f\v"); // trim from left
-inline std::string& rtrim(std::string& s, const char* t = " \t\n\r\f\v"); // trim from right
-inline std::string& trim(std::string& s, const char* t = " \t\n\r\f\v"); // trim from left & right
+inline string& ltrim(string& s, const char* t = " \t\n\r\f\v"); // trim from left
+inline string& rtrim(string& s, const char* t = " \t\n\r\f\v"); // trim from right
+inline string& trim(string& s, const char* t = " \t\n\r\f\v"); // trim from left & right
 
-RegisterDefinition_t read_ModbusRegisterDefinitions( const char* inputfile )
+
+RegisterDefinition_t read_ModbusRegisterDefinitions( const char* inputfile, std::ostream& warn /* default is std::cerr*/ )
 {
   RegisterDefinition_t Result;
 
@@ -21,7 +25,7 @@ RegisterDefinition_t read_ModbusRegisterDefinitions( const char* inputfile )
   }
 
   unsigned int LineNb=0;
-  std::string Line;
+  string Line;
   while( getline( infile, Line ) )
   {
     ++LineNb;
@@ -30,15 +34,15 @@ RegisterDefinition_t read_ModbusRegisterDefinitions( const char* inputfile )
     if( 0==Line.find(';') || 0==Line.find('#') )
       continue;
     // warn illegal lines
-    if( std::string::npos==Line.find(',') )
+    if( string::npos==Line.find(',') )
     {
-      std::cerr << "invalid line #" << LineNb << ": " << Line << std::endl;
+      warn << "invalid line #" << LineNb << ": " << Line << endl;
       continue;
     }
 
     std::istringstream csvStream( Line );
     ModbusRegister_t Fields;
-    std::string Element;
+    string Element;
     unsigned int ElementNb = 0;
 
     // read every element from the line that is seperated by commas and put it into the vector or strings
@@ -53,13 +57,13 @@ RegisterDefinition_t read_ModbusRegisterDefinitions( const char* inputfile )
         case 1: /*uint16_t len*/
           Fields.len = std::stoi( Element, nullptr, 0 ); // 0 to allow decimal, octal and 0x hex writing
           break;
-        case 2: /*std::string Orientation*/
+        case 2: /*string Orientation*/
           std::swap( Fields.Orientation, Element );
           break;
-        case 3: /*std::string DataType*/
+        case 3: /*string DataType*/
           std::swap( Fields.DataType, Element ); // of (void, dump, bit, bits, uint8_t, int8_t, uint16_t, int16_t, uint32_t, int32_t, float)
           break;
-        case 4: /*std::string Unit*/
+        case 4: /*string Unit*/
           std::swap( Fields.Unit, Element );
           break;
         case 5: /*double FactorToPrefUnit*/
@@ -71,19 +75,19 @@ RegisterDefinition_t read_ModbusRegisterDefinitions( const char* inputfile )
             val = std::stod( Element );
           } catch(...)
           {
-            std::cerr << "invalid line #" << LineNb << ", token #" << ElementNb << ": " << Line << std::endl;
-            std::cerr << "invalid line #" << LineNb << ", expecting double (floating point) value, got \"" << Element << "\" instead" << std::endl;
+            warn << "invalid line #" << LineNb << ", token #" << ElementNb << ": " << Line << endl;
+            warn << "invalid line #" << LineNb << ", expecting double (floating point) value, got \"" << Element << "\" instead" << endl;
             continue;
           }
           Fields.FactorToPrefUnit = val;
         };break;
-        case 6: /*std::string PrefUnit*/
+        case 6: /*string PrefUnit*/
           std::swap( Fields.PrefUnit, Element );
           break;
-        case 7: /*std::string Name*/
+        case 7: /*string Name*/
           std::swap( Fields.Name, Element );
           break;
-        case 8: /*std::string Description*/
+        case 8: /*string Description*/
           std::swap( Fields.Description, Element );
           break;
         default: // accidential delimitted freeform text, because it contained comma
@@ -99,7 +103,7 @@ RegisterDefinition_t read_ModbusRegisterDefinitions( const char* inputfile )
 }
 
 
-CommandNames_t read_ModbusCommands(const char* inputfile)
+CommandNames_t read_ModbusCommands( const char* inputfile, std::ostream& warn /* default is std::cerr*/ )
 {
   CommandNames_t Result;
 
@@ -109,7 +113,7 @@ CommandNames_t read_ModbusCommands(const char* inputfile)
     throw std::runtime_error( "Input file not found!" );
   }
 
-  std::string Line;
+  string Line;
   while( getline( infile, Line ) )
   {
     trim( Line );
@@ -117,15 +121,15 @@ CommandNames_t read_ModbusCommands(const char* inputfile)
     if( 0==Line.find(';') || 0==Line.find('#') )
       continue;
     // warn illegal lines
-    if( std::string::npos==Line.find(',') )
+    if( string::npos==Line.find(',') )
     {
-      std::cerr << "invalid line: " << Line << std::endl;
+      warn << "invalid line: " << Line << endl;
       continue;
     }
 
     std::istringstream csvStream( Line );
     ModbusCommand_t Fields;
-    std::string Element;
+    string Element;
     unsigned int ElementNb = 0;
 
     // read every element from the line that is seperated by commas and put it into the vector or strings
@@ -137,7 +141,7 @@ CommandNames_t read_ModbusCommands(const char* inputfile)
         case 0: /*uint8_t CommandNb*/
           Fields.CommandNb = std::stoi( Element, nullptr, 0 ); // 0 to allow decimal, octal and 0x hex writing
           break;
-        case 1: /*std::string Name*/
+        case 1: /*string Name*/
           std::swap( Fields.Name, Element );
           break;
         case 2: /*uint16_t maxAtOnce*/
@@ -146,7 +150,7 @@ CommandNames_t read_ModbusCommands(const char* inputfile)
         case 3: /*uint16_t minAddr - uint16_t maxAddr*/
         {
           std::istringstream RangeStream( Element );
-          std::string Part;
+          string Part;
           unsigned int PartNb=0;
           while( getline( RangeStream, Part, '-' ) )
           {
@@ -163,7 +167,7 @@ CommandNames_t read_ModbusCommands(const char* inputfile)
             }
           };
         }; break;
-        case 4: /*std::string Description*/
+        case 4: /*string Description*/
           std::swap( Fields.Description, Element );
           break;
         default: // accidential delimitted freeform text, because it contained comma
@@ -179,23 +183,76 @@ CommandNames_t read_ModbusCommands(const char* inputfile)
 }
 
 
+// ToDo: perhaps disable this fuction by #ifdef TESTING or the like?
+void dump_ModbusRegisterDefinitions( const RegisterDefinition_t& RecordsByRegnum, std::ostream& out /* default is std::cout*/ )
+{
+  for( const auto& Record : RecordsByRegnum )
+  {
+    out << std::setw(5) << Record.first <<  " => " << std::setw(5) << Record.second.Register
+        << ", L=" << std::setw(3) << Record.second.len
+        << ", " << std::setw(4) << Record.second.Orientation
+        << ",(" << Record.second.DataType
+        << "), " << Record.second.Unit;
+
+    if( Record.second.FactorToPrefUnit != 0.0 )
+    {
+      out << " * " << std::fixed << std::setprecision(3) << Record.second.FactorToPrefUnit
+          << "=> " << Record.second.PrefUnit;
+    }
+
+    out << ", Name:" << Record.second.Name;
+    if( ! Record.second.Description.empty() )
+    {
+      out << ", Descr:" << Record.second.Description;
+    }
+
+    out << endl;
+  }
+  return;
+} // end-of dump_ModbusRegisterDefinitions()
+
+
+// ToDo: perhaps disable this fuction by #ifdef TESTING or the like?
+void dump_ModbusCommands( const CommandNames_t& Commands, std::ostream& out /* default is std::cout*/ )
+{
+  for( const auto& Record : Commands )
+  {
+    auto Cmd = Record.second;
+    if( Cmd.maxAtOnce > 0 )
+    {
+      out << std::setw(2) << static_cast<int>( Record.first ) << " => " << std::setw(2) << static_cast<int>( Cmd.CommandNb )
+          << ", Max@Once=" << std::setw(4) << Cmd.maxAtOnce
+          << ", from=" << std::setw(5) << Cmd.minAddr
+          << ", to=" << std::setw(5) << Cmd.maxAddr
+          << ", Name:" << Cmd.Name;
+
+      if( ! Cmd.Description.empty() )
+      {
+        out << ", Descr:" << Cmd.Description;
+      }
+      out << endl;
+    }
+  }
+  return;
+} // end-of dump_ModbusCommands()
+
 
 // trim from left
-inline std::string& ltrim(std::string& s, const char* t)
+inline string& ltrim(string& s, const char* t)
 {
   s.erase(0, s.find_first_not_of(t));
   return s;
 }
 
 // trim from right
-inline std::string& rtrim(std::string& s, const char* t)
+inline string& rtrim(string& s, const char* t)
 {
   s.erase(s.find_last_not_of(t) + 1);
   return s;
 }
 
 // trim from left & right
-inline std::string& trim(std::string& s, const char* t)
+inline string& trim(string& s, const char* t)
 {
   return ltrim(rtrim(s, t), t);
 }

@@ -4,6 +4,7 @@
 #include <map>
 #include <string>
 #include <exception>
+#include <iostream>
 
 struct ModbusRegister_t
 {
@@ -32,7 +33,12 @@ struct ModbusCommand_t
 typedef std::map<uint16_t /*RegisterNb*/, ModbusRegister_t /*record*/> RegisterDefinition_t;
 typedef std::map<uint8_t /*CommandByte*/, ModbusCommand_t /*record*/> CommandNames_t;
 
-RegisterDefinition_t read_ModbusRegisterDefinitions(const char* inputfile);
-CommandNames_t read_ModbusCommands(const char* inputfile);
+RegisterDefinition_t read_ModbusRegisterDefinitions( const char* inputfile, std::ostream& warn = std::cerr );
+CommandNames_t read_ModbusCommands( const char* inputfile, std::ostream& warn = std::cerr );
+
+// ToDo: perhaps disable this fuction by #ifdef TESTING or the like?
+void dump_ModbusRegisterDefinitions( const RegisterDefinition_t& RecordsByRegnum, std::ostream& out = std::cout );
+void dump_ModbusCommands( const CommandNames_t& Commands, std::ostream& out = std::cout );
+
 
 #endif // READ_MODBUS_DEFINITIONS_H
