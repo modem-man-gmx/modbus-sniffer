@@ -550,7 +550,7 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
           uint8_t Bytes = buffer[Idx];
           BytesAnswered = Bytes;
           if(0==BytesAnswered) { // really seen such package, but it was a second request, not an answer, so the decoder was wrong her and need retry
-            fprintf(stderr, "couldn't be an answer, try request decoding");
+            fprintf(stderr, "couldn't be an answer, try request decoding instead\n");
             return DECODE_DIRECTION_WRONG;
           }
           RegCount = BytesAnswered / 2;
@@ -745,8 +745,12 @@ int main(int argc, char **argv)
 
             size += n_bytes;
         }
+        
+        if( size < MODBUS_MAX_PACKET_SIZE && n_bytes == 0) {
+            fprintf(stderr, "still waiting on%s data.\n", (size)?"more":"");
+        }
 
-        /* captured an entire packet */
+        /* captured an entire (???) packet */
         if (size > 0 && (res == 0 || size >= MODBUS_MAX_PACKET_SIZE || n_bytes == 0)) {
             //fprintf(stderr, "captured packet %d: length = %zu, ", ++n_packets, size);
             fprintf(stderr, "captured packet %d: length = %zu\n", ++n_packets, size);
@@ -754,18 +758,19 @@ int main(int argc, char **argv)
             if (n_packets % args.max_packet_per_capture == 0)
                 rotate_log = 1;
 
-            dump_buffer(buffer, size,"\tREAD: ");
+            dump_buffer(buffer, size,"\tREAD");
 
             int res = decode_buffer(buffer, size, CommandsByNum, RegistersByNum, isAnswer, LastRegNum, Remaining);
             if (DECODE_NEEDS_DATA==res) {
                 // Remaining could say, how much is missing
-                fprintf(stderr, "DECODE_NEEDS_DATA length = %lu, had = %zu", Remaining, size);
+                fprintf(stderr, "DECODE_NEEDS_DATA length = %lu, had = %zu\n", Remaining, size);
                 continue;
             }
 
             if (DECODE_DIRECTION_WRONG==res && Loops<4) {
-                isAnswer = (isAnswer) ? 0 : 1;
                 Loops++;
+                isAnswer = (isAnswer) ? 0 : 1;
+                fprintf(stderr, "DECODE_DIRECTION_WRONG, try decoding as %s instead\n", (isAnswer)?"answer":"request" );
                 continue;
             }
             Loops=0;
@@ -779,8 +784,8 @@ int main(int argc, char **argv)
             size_t eaten = size - Remaining;
             if (crc_check(buffer, eaten) || args.ignore_crc) {
               /* was not able to decode? then at least dump it */
-              dump_buffer(buffer, eaten, "\tDONE: ");
-              dump_buffer(buffer+eaten, Remaining, "\tNEXT: ");
+              dump_buffer(buffer, eaten, "\tDONE");
+              dump_buffer(buffer+eaten, Remaining, "\tNEXT");
             }
 
             write_packet_header(log_fp, size);
