@@ -766,7 +766,7 @@ int main(int argc, char **argv)
             int res = decode_buffer(buffer, size, CommandsByNum, RegistersByNum, isAnswer, LastRegNum, Remaining);
             if (DECODE_NEEDS_DATA==res) {
                 // Remaining could say, how much is missing
-                fprintf(stderr, "DECODE_NEEDS_DATA length = %lu, had = %zu\n", Remaining, size);
+                fprintf(stderr, "DECODE_NEEDS_DATA length = %zu, had = %zu\n", Remaining, size);
                 continue;
             }
 
@@ -781,7 +781,7 @@ int main(int argc, char **argv)
             // (DECODE_HAS_DATA_LEFT==res) || (DECODE_DONE_WELL==res)
             // Remaining tells, how much is over (likely parts of next package)
             if (Remaining) {
-                fprintf(stderr, "\tDECODE_HAS_DATA_LEFT length = %lu\n", Remaining);
+                fprintf(stderr, "\tDECODE_HAS_DATA_LEFT length = %zu\n", Remaining);
             }
 
             size_t eaten = size - Remaining;
@@ -799,7 +799,7 @@ int main(int argc, char **argv)
             fflush(log_fp);
 
             if (DECODE_HAS_DATA_LEFT==res){
-              fprintf(stderr, "\tDECODE_HAS_DATA_LEFT length = %lu of %zu, move <- %zu to buffer start\n", Remaining, size, eaten);
+              fprintf(stderr, "\tDECODE_HAS_DATA_LEFT length = %zu of %zu, move <- %zu to buffer start\n", Remaining, size, eaten);
               memmove(buffer,buffer+eaten,Remaining);
               size = Remaining;
             } else {
