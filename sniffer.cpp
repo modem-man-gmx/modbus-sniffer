@@ -461,10 +461,12 @@ void signal_handler(int) // handler for SIGUSR1: just create a new trace file
     rotate_log = 1;
 }
 
-void dump_buffer(uint8_t *buffer, uint16_t length)
+void dump_buffer(uint8_t *buffer, uint16_t length, const char* prefix_txt)
 {
 	int i;
-	fprintf(stderr, "\tDUMP: ");
+	if(prefix_txt) {
+		fprintf(stderr, "%s: ", prefix_txt);
+    }
 	for (i=0; i < length; i++) {
 		fprintf(stderr, " %02X", (uint8_t)buffer[i]);
 	}
@@ -475,6 +477,7 @@ void dump_buffer(uint8_t *buffer, uint16_t length)
 # define DECODE_DONE_WELL 0
 # define DECODE_NEEDS_DATA 1
 # define DECODE_HAS_DATA_LEFT -1
+# define DECODE_DIRECTION_WRONG -2
 int decode_buffer(uint8_t *buffer, uint16_t length, 
                   const CommandNames_t& CommandsByNum, 
                   const RegisterDefinition_t& RegistersByNum, 
@@ -546,6 +549,10 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
         if (length>=1) {
           uint8_t Bytes = buffer[Idx];
           BytesAnswered = Bytes;
+          if(0==BytesAnswered) { // really seen such package, but it was a second request, not an answer, so the decoder was wrong her and need retry
+            fprintf(stderr, "couldn't be an answer, try request decoding");
+            return DECODE_DIRECTION_WRONG;
+          }
           RegCount = BytesAnswered / 2;
           fprintf(stderr, "%u Bytes, ", BytesAnswered);
           length--;Idx++;
@@ -707,7 +714,7 @@ int main(int argc, char **argv)
 
     configure_serial_port(port, &args);
 
-    int isAnswer=0;
+    int isAnswer=0, Loops=0;
     uint16_t LastRegNum=0;
     size_t Remaining=0;
 
@@ -741,31 +748,39 @@ int main(int argc, char **argv)
 
         /* captured an entire packet */
         if (size > 0 && (res == 0 || size >= MODBUS_MAX_PACKET_SIZE || n_bytes == 0)) {
-            fprintf(stderr, "captured packet %d: length = %zu, ", ++n_packets, size);
+            //fprintf(stderr, "captured packet %d: length = %zu, ", ++n_packets, size);
+            fprintf(stderr, "captured packet %d: length = %zu\n", ++n_packets, size);
 
             if (n_packets % args.max_packet_per_capture == 0)
                 rotate_log = 1;
 
-            dump_buffer(buffer, size);
+            dump_buffer(buffer, size,"\tREAD: ");
 
             int res = decode_buffer(buffer, size, CommandsByNum, RegistersByNum, isAnswer, LastRegNum, Remaining);
             if (DECODE_NEEDS_DATA==res) {
                 // Remaining could say, how much is missing
-                fprintf(stderr, "DECODE_NEEDS_DATA length = %lu, had = %lu", Remaining, size);
+                fprintf(stderr, "DECODE_NEEDS_DATA length = %lu, had = %zu", Remaining, size);
                 continue;
             }
+
+            if (DECODE_DIRECTION_WRONG==res && Loops<4) {
+                isAnswer = (isAnswer) ? 0 : 1;
+                Loops++;
+                continue;
+            }
+            Loops=0;
 
             // (DECODE_HAS_DATA_LEFT==res) || (DECODE_DONE_WELL==res)
             // Remaining tells, how much is over (likely parts of next package)
             if (Remaining) {
-                fprintf(stderr, "DECODE_HAS_DATA_LEFT length = %lu\n", Remaining);
+                fprintf(stderr, "\tDECODE_HAS_DATA_LEFT length = %lu\n", Remaining);
             }
 
             size_t eaten = size - Remaining;
             if (crc_check(buffer, eaten) || args.ignore_crc) {
               /* was not able to decode? then at least dump it */
-              dump_buffer(buffer, eaten);
-              dump_buffer(buffer+eaten, Remaining);
+              dump_buffer(buffer, eaten, "\tDONE: ");
+              dump_buffer(buffer+eaten, Remaining, "\tNEXT: ");
             }
 
             write_packet_header(log_fp, size);
@@ -776,7 +791,7 @@ int main(int argc, char **argv)
             fflush(log_fp);
 
             if (DECODE_HAS_DATA_LEFT==res){
-              fprintf(stderr, "DECODE_HAS_DATA_LEFT length = %lu of %lu, move it <- %lu to buffer start\n", Remaining, size, eaten);
+              fprintf(stderr, "\tDECODE_HAS_DATA_LEFT length = %lu of %zu, move <- %zu to buffer start\n", Remaining, size, eaten);
               memmove(buffer,buffer+eaten,Remaining);
               size = Remaining;
             } else {
