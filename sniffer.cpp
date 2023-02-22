@@ -436,6 +436,83 @@ void write_packet_header(FILE *fp, int length)
     fflush(fp);
 }
 
+long get_frame_gap( const struct cli_args *args )
+{
+    long bits_per_3dot5 = (35 * (1 + args->bits + (args->parity == 'N')?0:1 + args->stop_bits))/10;
+    long millisec = (bits_per_3dot5 * 1000)/(args->speed);
+    return millisec;
+}
+
+
+long get_elapsed_time( const struct timespec t0, const struct timespec t1 )
+{
+    long delta_ms;
+    delta_ms = 1000 * (t1.tv_sec - t0.tv_sec);
+    delta_ms += (t1.tv_nsec - t0.tv_nsec)/1000;
+    return delta_ms;
+}
+
+long get_shortest_time( long delta_ms )
+{
+    static long shortest_so_far = __LONG_MAX__;
+    if (delta_ms>0 && delta_ms<shortest_so_far ) {
+        shortest_so_far=delta_ms;
+    }
+    return shortest_so_far;
+}
+
+long get_longest_time( long delta_ms )
+{
+    static long longest_so_far = 0;
+    if (delta_ms>0 && delta_ms>longest_so_far ) {
+        longest_so_far=delta_ms;
+    }
+    return longest_so_far;
+}
+
+long get_average_time( long delta_ms )
+{
+    static long long summup=0;
+    static unsigned long count=0;
+    static int loga=0;
+
+    if (count==__LONG_LONG_MAX__) { // switch to logarithmic average, because overflow
+        if (!loga) {
+            summup = summup/count;
+            loga=1;
+        }
+        summup = (summup + delta_ms)/2;
+        return summup;
+    } else { // normal average
+        summup += delta_ms;
+        count++;
+        return summup / count;
+    }
+}
+
+void print_timestamp( const struct timespec t0, const struct timespec t1, int as_delta )
+{
+    long milliseconds = 0;
+    if (as_delta==1) {
+        milliseconds = get_elapsed_time(t0,t1);
+    } else if (as_delta==0) {
+        milliseconds = t1.tv_sec*1000 + t1.tv_nsec/1000;
+    } else { // with clock
+        milliseconds = t1.tv_sec*1000 + t1.tv_nsec/1000;
+        time_t t = time(NULL);
+        struct tm *tm = localtime(&t);
+        char calendar[64];
+        strftime(calendar, sizeof(calendar), "%Y%m%d %H%M%S", tm);
+        calendar[ sizeof(calendar)-1 ]=0;
+        fprintf(stderr, "%s,", calendar);
+    }
+    fprintf(stderr, "%08ld: ", milliseconds);
+}
+
+
+
+
+
 FILE *open_logfile(const char *path)
 {
     FILE *fp;
@@ -749,8 +826,13 @@ int main(int argc, char **argv)
     int isAnswer=0, Loops=0;
     uint16_t LastRegNum=0;
     size_t Remaining=0;
-    int crc_ok=0;
+    int crc_ok=0, new_data=0;
     uint16_t crc;
+    long elapsed_ms=0, shortest_ms=0, longest_ms=0, avrg_ms=0;
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_REALTIME, &t0);
+
+    long modbus_gap_ms = get_frame_gap( &args );
 
     while (n_bytes != 0) {
         if (rotate_log || !log_fp) {
@@ -768,6 +850,8 @@ int main(int argc, char **argv)
         /* also these maybe overwritten in Linux */
         timeout.tv_sec = 0;
         timeout.tv_usec = args.bytes_time_interval_us;
+        
+        new_data=0;
 
         if ((res = select(port + 1, &set, NULL, NULL, &timeout)) < 0 && errno != EINTR)
             DIE("select");
@@ -778,16 +862,25 @@ int main(int argc, char **argv)
                 DIE("read port");
 
             size += n_bytes;
+            if(n_bytes) new_data=1;
         }
         
-        if( size < MODBUS_MAX_PACKET_SIZE && n_bytes == 0) {
-            fprintf(stderr, "still waiting on%s data.\n", (size)?"more":"");
-        }
-
         /* captured an entire (???) packet */
         if (size > 0 && (res == 0 || size >= MODBUS_MAX_PACKET_SIZE || n_bytes == 0)) {
-            //fprintf(stderr, "captured packet %d: length = %zu, ", ++n_packets, size);
-            fprintf(stderr, "captured packet %d: length = %zu\n", ++n_packets, size);
+            ++n_packets;
+            if (new_data) {
+                clock_gettime(CLOCK_REALTIME, &t1);
+                elapsed_ms = get_elapsed_time( t0, t1 );
+                shortest_ms=get_shortest_time( elapsed_ms );
+                longest_ms =get_longest_time( elapsed_ms );
+                avrg_ms    =get_average_time( elapsed_ms );
+                
+                print_timestamp( t0, t1, -1 );
+                fprintf(stderr, "captured packet %d: len=%zu, t_min=%ld, t=%ld, t_max=%ld, t_avg=%ld, req=%ld\n"
+                              , n_packets, size
+                              , shortest_ms, elapsed_ms, longest_ms, avrg_ms
+                              , modbus_gap_ms );
+            }
 
             if (n_packets % args.max_packet_per_capture == 0)
                 rotate_log = 1;
@@ -843,7 +936,6 @@ int main(int argc, char **argv)
             } else {
               size = 0;
             }
-
         } // end-if of buffer timed out (unreliable on some hardware) || buffer is too full.
     } // while nothing got read
   }
