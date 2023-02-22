@@ -475,7 +475,7 @@ void dump_buffer(uint8_t *buffer, uint16_t length, const char* prefix_txt)
 }
 
 
-int is_broken_answer( uint8_t *answer, uint16_t answer_length, uint8_t *request, uint16_t request_length )
+int broken_answer( uint8_t *answer, uint16_t answer_length, uint8_t *request, uint16_t request_length )
 {
     if (request_length<8 || answer_length<3) {
         return 0;
@@ -572,9 +572,13 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
             return DECODE_DIRECTION_WRONG;
           }
           // tentative crc validation to see, if this could be an complete packet already
-          if (crc_check(buffer, length_original, 0) && is_broken_answer( buffer, length_original, prev_buf, prev_length )) {
-            fprintf(stderr, "couldn't be right length %u, setting to %u\n", BytesAnswered, length_original);
-            // code to come
+          if (BytesAnswered>length) {
+              int crc_ok = crc_check(buffer, length_original, 0);
+              if ( broken_answer( buffer, length_original, prev_buf, prev_length ) && crc_ok ) {
+                fprintf(stderr, "couldn't be right length %u, setting to %u\n", BytesAnswered, length_original);
+                // code to come
+                BytesAnswered = length-2;
+              }
           }
           RegCount = BytesAnswered / 2;
           fprintf(stderr, "%u Bytes, ", BytesAnswered);
@@ -617,23 +621,23 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
             }
             else if (Reg.DataType==std::string("uint8_t")) {
               uint8_t Byte = static_cast<uint8_t>(buffer[Idx]);
-              fprintf(stderr, "%ud ", static_cast<uint16_t>(Byte) );
+              fprintf(stderr, "{%u} ", static_cast<uint16_t>(Byte) );
             }
             else if (Reg.DataType==std::string("int8_t")) {
               int8_t Byte = static_cast<int8_t>(buffer[Idx]);
-              fprintf(stderr, "%d ", static_cast<int16_t>(Byte) );
+              fprintf(stderr, "{%d} ", static_cast<int16_t>(Byte) );
             }
             else if (Reg.DataType==std::string("uint16_t")) {
               uint8_t ValHi = buffer[Idx];
               uint8_t ValLo = buffer[Idx+1];
               uint16_t Value = (ValHi << 8) + ValLo;
-              fprintf(stderr, "%ud ", Value );
+              fprintf(stderr, "{%u} ", Value );
             }
             else if (Reg.DataType==std::string("int16_t")) {
               uint8_t ValHi = buffer[Idx];
               uint8_t ValLo = buffer[Idx+1];
               uint16_t Value = (ValHi << 8) + ValLo;
-              fprintf(stderr, "%d ", static_cast<int16_t>(Value) );
+              fprintf(stderr, "{%d} ", static_cast<int16_t>(Value) );
             }
             else if (Reg.DataType==std::string("uint32_t")) {
               uint8_t ValA = buffer[Idx];
@@ -641,7 +645,7 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
               uint8_t ValC = buffer[Idx+2];
               uint8_t ValD = buffer[Idx+3];
               uint32_t Value = (ValA << 24) + (ValB << 16) + (ValC << 8) + ValD;
-              fprintf(stderr, "%ul ", Value );
+              fprintf(stderr, "{%ul} ", Value );
             }
             else if (Reg.DataType==std::string("int32_t")) {
               uint8_t ValA = buffer[Idx];
@@ -649,7 +653,7 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
               uint8_t ValC = buffer[Idx+2];
               uint8_t ValD = buffer[Idx+3];
               uint32_t Value = (ValA << 24) + (ValB << 16) + (ValC << 8) + ValD;
-              fprintf(stderr, "%d ", static_cast<int32_t>(Value) );
+              fprintf(stderr, "{%d} ", static_cast<int32_t>(Value) );
             }
             else if (Reg.DataType==std::string("float")) {
               uint8_t ValA = buffer[Idx];
@@ -658,7 +662,7 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
               uint8_t ValD = buffer[Idx+3];
               uint32_t Value = (ValA << 24) + (ValB << 16) + (ValC << 8) + ValD;
               float *pFloat = reinterpret_cast<float*>(&Value);
-              fprintf(stderr, "%f ", *pFloat );
+              fprintf(stderr, "{%f} ", *pFloat );
             }
             if (RegNo < LastRegNum + RegCount) {
               fprintf(stderr, "\n\t" );
