@@ -866,6 +866,8 @@ int main(int argc, char **argv)
             if(n_bytes>0)
                 new_data=1;
         }
+
+fprintf(stderr, "size=%zu, res=%d, n_bytes=%zu", size, res, n_bytes );
         
         /* captured an entire (???) packet */
         if (size > 0 && (res == 0 || size >= MODBUS_MAX_PACKET_SIZE || n_bytes == 0)) {
