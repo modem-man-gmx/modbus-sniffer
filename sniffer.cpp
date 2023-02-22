@@ -121,7 +121,7 @@ uint16_t crc16_table[] = {
     0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040,
 };
 
-int crc_check(uint8_t *buffer, int length)
+int crc_check(uint8_t *buffer, int length, uint16_t* return_crc)
 {
     uint8_t byte;
     uint16_t crc = 0xFFFF;
@@ -135,7 +135,8 @@ int crc_check(uint8_t *buffer, int length)
 
    valid_crc = ((crc >> 8) == (buffer[1] & 0xFF))  && ((crc & 0xFF) == (buffer[0] & 0xFF)) ;
 
-   fprintf(stderr, "CRC: %04X = %02X%02X [%s]\n", crc, buffer[1] & 0xFF, buffer[0] & 0xFF, valid_crc ? "OK" : "FAIL");
+   //fprintf(stderr, "CRC: %04X = %02X%02X [%s]\n", crc, buffer[1] & 0xFF, buffer[0] & 0xFF, valid_crc ? "OK" : "FAIL");
+   if(return_crc) *return_crc = crc;
    return valid_crc;
 }
 
@@ -474,17 +475,34 @@ void dump_buffer(uint8_t *buffer, uint16_t length, const char* prefix_txt)
 }
 
 
+int is_broken_answer( uint8_t *answer, uint16_t answer_length, uint8_t *request, uint16_t request_length )
+{
+    if (request_length<8 || answer_length<3) {
+        return 0;
+    }
+    // ChINT Hoymiles bug: [2C] 03 20 06 00 2C [A9 AB] -->  [2C] 03 58 45 13 80 00 45 14 00 00 45 13 [B0 00]
+    uint8_t bad_req1[] = { 0x03, 0x20, 0x06, 0x00, 0x2C };
+    uint8_t bad_ans1[] = { 0x03, 0x03, 0x58, 0x45, 0x13, 0x80, 0x00, 0x45, 0x14, 0x00, 0x00, 0x45, 0x13};
+    if (0==memcmp(request+1,bad_req1,request_length-3) && 0==memcmp(answer+1,bad_ans1,answer_length-3) ) {
+      return 1;
+    }
+    return 0;
+}
+
+
 # define DECODE_DONE_WELL 0
 # define DECODE_NEEDS_DATA 1
 # define DECODE_HAS_DATA_LEFT -1
 # define DECODE_DIRECTION_WRONG -2
 int decode_buffer(uint8_t *buffer, uint16_t length, 
+                  uint8_t *prev_buf, uint16_t prev_length, 
                   const CommandNames_t& CommandsByNum, 
                   const RegisterDefinition_t& RegistersByNum, 
                   int& isAnswer, 
                   uint16_t& LastRegNum,
                   size_t& Remaining)
 {
+    uint16_t length_original=length;
     uint16_t BytesAnswered=0, RegCount=0;
     size_t Idx=0;
     ModbusCommand_t Cmd;
@@ -549,9 +567,14 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
         if (length>=1) {
           uint8_t Bytes = buffer[Idx];
           BytesAnswered = Bytes;
-          if(0==BytesAnswered) { // really seen such package, but it was a second request, not an answer, so the decoder was wrong her and need retry
+          if (0==BytesAnswered) { // really seen such package, but it was a second request, not an answer, so the decoder was wrong here and need retry
             fprintf(stderr, "couldn't be an answer, try request decoding instead\n");
             return DECODE_DIRECTION_WRONG;
+          }
+          // tentative crc validation to see, if this could be an complete packet already
+          if (crc_check(buffer, length_original, 0) && is_broken_answer( buffer, length_original, prev_buf, prev_length )) {
+            fprintf(stderr, "couldn't be right length %u, setting to %u\n", BytesAnswered, length_original);
+            // code to come
           }
           RegCount = BytesAnswered / 2;
           fprintf(stderr, "%u Bytes, ", BytesAnswered);
@@ -681,8 +704,9 @@ int main(int argc, char **argv)
   {
     struct cli_args args = {};
     int port, n_bytes = -1, res, n_packets = 0;
-    size_t size = 0;
+    size_t size = 0, size_prev = 0;
     uint8_t buffer[MODBUS_MAX_PACKET_SIZE];
+    uint8_t buffer_prev[MODBUS_MAX_PACKET_SIZE];
     struct timeval timeout;
     fd_set set;
     FILE *log_fp = NULL;
@@ -720,6 +744,8 @@ int main(int argc, char **argv)
     int isAnswer=0, Loops=0;
     uint16_t LastRegNum=0;
     size_t Remaining=0;
+    int crc_ok=0;
+    uint16_t crc;
 
     while (n_bytes != 0) {
         if (rotate_log || !log_fp) {
@@ -763,7 +789,7 @@ int main(int argc, char **argv)
 
             dump_buffer(buffer, size,"\tREAD");
 
-            int res = decode_buffer(buffer, size, CommandsByNum, RegistersByNum, isAnswer, LastRegNum, Remaining);
+            int res = decode_buffer(buffer, size, buffer_prev, size_prev, CommandsByNum, RegistersByNum, isAnswer, LastRegNum, Remaining);
             if (DECODE_NEEDS_DATA==res) {
                 // Remaining could say, how much is missing
                 fprintf(stderr, "DECODE_NEEDS_DATA length = %zu, had = %zu\n", Remaining, size);
@@ -778,14 +804,21 @@ int main(int argc, char **argv)
             }
             Loops=0;
 
-            // (DECODE_HAS_DATA_LEFT==res) || (DECODE_DONE_WELL==res)
+            // Here we have: (DECODE_HAS_DATA_LEFT==res) || (DECODE_DONE_WELL==res)
             // Remaining tells, how much is over (likely parts of next package)
+            
             if (Remaining) {
                 fprintf(stderr, "\tDECODE_HAS_DATA_LEFT length = %zu\n", Remaining);
             }
 
             size_t eaten = size - Remaining;
-            if (crc_check(buffer, eaten) || args.ignore_crc) {
+            crc_ok = crc_check(buffer, eaten, &crc);
+            fprintf(stderr, "CRC: %04X = %02X%02X [%s]\n", crc, buffer[eaten-2] & 0xFF, buffer[eaten-1] & 0xFF, crc_ok ? "OK" : "FAIL");
+            if (crc_ok) {
+              size_prev = eaten;
+              memcpy(buffer_prev,buffer,eaten);
+            }
+            if (crc_ok || args.ignore_crc) {
               /* was not able to decode? then at least dump it */
               dump_buffer(buffer, eaten, "\tDONE");
               dump_buffer(buffer+eaten, Remaining, "\tNEXT");
