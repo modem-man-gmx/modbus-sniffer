@@ -502,11 +502,12 @@ void print_timestamp( const struct timespec t0, const struct timespec t1, int as
         time_t t = time(NULL);
         struct tm *tm = localtime(&t);
         char calendar[64];
-        strftime(calendar, sizeof(calendar), "%Y%m%d %H%M%S", tm);
+        strftime(calendar, sizeof(calendar), "%Y-%m-%d %H:%M:%S", tm);
         calendar[ sizeof(calendar)-1 ]=0;
-        fprintf(stderr, "%s,", calendar);
+        fprintf(stderr, "%s,%03ld: ", calendar, milliseconds%1000);
+        return;
     }
-    fprintf(stderr, "%08ld: ", milliseconds);
+    fprintf(stderr, "%08ld: ", milliseconds%1000);
 }
 
 
@@ -862,13 +863,14 @@ int main(int argc, char **argv)
                 DIE("read port");
 
             size += n_bytes;
-            if(n_bytes) new_data=1;
+            if(n_bytes>0)
+                new_data=1;
         }
         
         /* captured an entire (???) packet */
         if (size > 0 && (res == 0 || size >= MODBUS_MAX_PACKET_SIZE || n_bytes == 0)) {
             ++n_packets;
-            if (new_data) {
+            if (new_data!=0) {
                 clock_gettime(CLOCK_REALTIME, &t1);
                 elapsed_ms = get_elapsed_time( t0, t1 );
                 shortest_ms=get_shortest_time( elapsed_ms );
@@ -880,6 +882,7 @@ int main(int argc, char **argv)
                               , n_packets, size
                               , shortest_ms, elapsed_ms, longest_ms, avrg_ms
                               , modbus_gap_ms );
+                t0 = t1;
             }
 
             if (n_packets % args.max_packet_per_capture == 0)
