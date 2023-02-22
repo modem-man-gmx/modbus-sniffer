@@ -135,7 +135,7 @@ int crc_check(uint8_t *buffer, int length, uint16_t* return_crc)
 
    valid_crc = ((crc >> 8) == (buffer[1] & 0xFF))  && ((crc & 0xFF) == (buffer[0] & 0xFF)) ;
 
-   //fprintf(stderr, "CRC: %04X = %02X%02X [%s]\n", crc, buffer[1] & 0xFF, buffer[0] & 0xFF, valid_crc ? "OK" : "FAIL");
+   fprintf(stderr, "CRC: %04X = %02X%02X [%s]\n", crc, buffer[1] & 0xFF, buffer[0] & 0xFF, valid_crc ? "OK" : "FAIL");
    if(return_crc) *return_crc = crc;
    return valid_crc;
 }
@@ -526,7 +526,7 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
         Cmd = found->second;
         fprintf(stderr, "%s, ", Cmd.Name.c_str());
       } else {
-        fprintf(stderr, "Cmd%02X, ", Command);
+        fprintf(stderr, "Cmd_%02X, ", Command);
       }
       length--;Idx++;
     }
@@ -572,6 +572,7 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
             return DECODE_DIRECTION_WRONG;
           }
           // tentative crc validation to see, if this could be an complete packet already
+          fprintf(stderr, "check plausibility of length %u/%u\n", BytesAnswered, length);
           if (BytesAnswered>length) {
               int crc_ok = crc_check(buffer, length_original, 0);
               if ( broken_answer( buffer, length_original, prev_buf, prev_length ) && crc_ok ) {
