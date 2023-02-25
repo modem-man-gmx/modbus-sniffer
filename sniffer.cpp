@@ -438,7 +438,8 @@ void write_packet_header(FILE *fp, int length)
 
 long get_frame_gap( const struct cli_args *args )
 {
-    long bits_per_3dot5 = (35 * (1 + args->bits + (args->parity == 'N')?0:1 + args->stop_bits))/10;
+    long bits = 1 + args->bits + ((args->parity == 'N') ? 0 : 1) + args->stop_bits;
+    long bits_per_3dot5 = (35 * bits) / 10;
     long millisec = (bits_per_3dot5 * 1000)/(args->speed);
     return millisec;
 }
@@ -448,7 +449,7 @@ long get_elapsed_time( const struct timespec t0, const struct timespec t1 )
 {
     long delta_ms;
     delta_ms = 1000 * (t1.tv_sec - t0.tv_sec);
-    delta_ms += (t1.tv_nsec - t0.tv_nsec)/1000;
+    delta_ms += (t1.tv_nsec - t0.tv_nsec) / 1000000L;
     return delta_ms;
 }
 
@@ -473,7 +474,7 @@ long get_longest_time( long delta_ms )
 long get_average_time( long delta_ms )
 {
     static long long summup=0;
-    static unsigned long count=0;
+    static unsigned long long count = 0;
     static int loga=0;
 
     if (count==__LONG_LONG_MAX__) { // switch to logarithmic average, because overflow
@@ -492,19 +493,18 @@ long get_average_time( long delta_ms )
 
 void print_timestamp( const struct timespec t0, const struct timespec t1, int as_delta )
 {
-    long milliseconds = 0;
+    long milliseconds = 0; //full milliseconds, can be multiple seconds or more
     if (as_delta==1) {
         milliseconds = get_elapsed_time(t0,t1);
     } else if (as_delta==0) {
-        milliseconds = t1.tv_sec*1000 + t1.tv_nsec/1000;
+        milliseconds = t1.tv_sec * 1000L + (t1.tv_nsec+500000L) / 1000000L;
     } else { // with clock
-        milliseconds = t1.tv_sec*1000 + t1.tv_nsec/1000;
         time_t t = time(NULL);
         struct tm *tm = localtime(&t);
         char calendar[64];
         strftime(calendar, sizeof(calendar), "%Y-%m-%d %H:%M:%S", tm);
         calendar[ sizeof(calendar)-1 ]=0;
-        fprintf(stderr, "%s,%03ld: ", calendar, milliseconds%1000);
+        fprintf(stderr, "%s,%06lu: ", calendar, ((t1.tv_nsec+500) / 1000ul));  // uSec
         return;
     }
     fprintf(stderr, "%08ld: ", milliseconds%1000);
@@ -568,15 +568,15 @@ int broken_answer( uint8_t *answer, uint16_t answer_length, uint8_t *request, ui
 }
 
 
-# define DECODE_DONE_WELL 0
-# define DECODE_NEEDS_DATA 1
-# define DECODE_HAS_DATA_LEFT -1
-# define DECODE_DIRECTION_WRONG -2
-int decode_buffer(uint8_t *buffer, uint16_t length, 
-                  uint8_t *prev_buf, uint16_t prev_length, 
-                  const CommandNames_t& CommandsByNum, 
-                  const RegisterDefinition_t& RegistersByNum, 
-                  int& isAnswer, 
+#define DECODE_DONE_WELL 0
+#define DECODE_NEEDS_DATA 1
+#define DECODE_HAS_DATA_LEFT -1
+#define DECODE_DIRECTION_WRONG -2
+int decode_buffer(uint8_t *buffer, uint16_t length,
+                  uint8_t *prev_buf, uint16_t prev_length,
+                  const CommandNames_t& CommandsByNum,
+                  const RegisterDefinition_t& RegistersByNum,
+                  int& isAnswer,
                   uint16_t& LastRegNum,
                   size_t& Remaining)
 {
@@ -666,8 +666,7 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
         /* --- Block C.2: the 1..RegCount Register(s) content the message contains --- */
         if (length>=BytesAnswered) {
           // RegCount times dump...
-          for( uint16_t RegNo = LastRegNum; RegNo < LastRegNum + RegCount; RegNo++ )
-          {
+      for(uint16_t RegNo = LastRegNum; RegNo < LastRegNum + RegCount; RegNo++) {
             const auto found = RegistersByNum.find(RegNo);
             if (RegistersByNum.end() != found) {
               Reg = found->second;
@@ -806,7 +805,7 @@ int main(int argc, char **argv)
       CommandsByNum = read_ModbusCommands( args.commands_cfg );
       fprintf(stderr, "OK\n" );
     } else {
-      fprintf(stderr, "  no command decoding wanted.\n" );
+      fprintf(stderr, "  no command decoding wanted.\n");
     }
 
     RegisterDefinition_t RegistersByNum;
@@ -832,6 +831,7 @@ int main(int argc, char **argv)
     long elapsed_ms=0, shortest_ms=0, longest_ms=0, avrg_ms=0;
     struct timespec t0, t1;
     clock_gettime(CLOCK_REALTIME, &t0);
+    int decode_res = DECODE_NEEDS_DATA;
 
     long modbus_gap_ms = get_frame_gap( &args );
 
@@ -863,16 +863,8 @@ int main(int argc, char **argv)
                 DIE("read port");
 
             size += n_bytes;
-            if(n_bytes>0)
+            if (n_bytes > 0) {
                 new_data=1;
-        }
-
-fprintf(stderr, "size=%zu, res=%d, n_bytes=%zu", size, res, n_bytes );
-        
-        /* captured an entire (???) packet */
-        if (size > 0 && (res == 0 || size >= MODBUS_MAX_PACKET_SIZE || n_bytes == 0)) {
-            ++n_packets;
-            if (new_data!=0) {
                 clock_gettime(CLOCK_REALTIME, &t1);
                 elapsed_ms = get_elapsed_time( t0, t1 );
                 shortest_ms=get_shortest_time( elapsed_ms );
@@ -886,20 +878,34 @@ fprintf(stderr, "size=%zu, res=%d, n_bytes=%zu", size, res, n_bytes );
                               , modbus_gap_ms );
                 t0 = t1;
             }
+        }
+
+        if (DECODE_NEEDS_DATA == decode_res && !new_data) {
+            continue;
+        }
+
+        /* captured an entire (???) packet */
+//this is wrong!
+//      if (size > 0 && (res == 0 || size >= MODBUS_MAX_PACKET_SIZE || n_bytes == 0)) {
+        if (size > 0) {
+            ++n_packets;
+
+            print_timestamp( t0, t1, -1 );
+            fprintf(stderr, "GOT new block - size=%zu, res=%d, n_bytes=%zu\n", size, res, n_bytes );
 
             if (n_packets % args.max_packet_per_capture == 0)
                 rotate_log = 1;
 
-            dump_buffer(buffer, size,"\tREAD");
+            dump_buffer(buffer, size, "\tREAD");
 
-            int res = decode_buffer(buffer, size, buffer_prev, size_prev, CommandsByNum, RegistersByNum, isAnswer, LastRegNum, Remaining);
-            if (DECODE_NEEDS_DATA==res) {
+            decode_res = decode_buffer( buffer, size, buffer_prev, size_prev, CommandsByNum, RegistersByNum, isAnswer, LastRegNum, Remaining );
+            if (DECODE_NEEDS_DATA == decode_res) {
                 // Remaining could say, how much is missing
                 fprintf(stderr, "DECODE_NEEDS_DATA length = %zu, had = %zu\n", Remaining, size);
                 continue;
             }
 
-            if (DECODE_DIRECTION_WRONG==res && Loops<4) {
+            if (DECODE_DIRECTION_WRONG == decode_res && Loops < 4) {
                 Loops++;
                 isAnswer = (isAnswer) ? 0 : 1;
                 fprintf(stderr, "DECODE_DIRECTION_WRONG, try decoding as %s instead\n", (isAnswer)?"answer":"request" );
@@ -907,7 +913,7 @@ fprintf(stderr, "size=%zu, res=%d, n_bytes=%zu", size, res, n_bytes );
             }
             Loops=0;
 
-            // Here we have: (DECODE_HAS_DATA_LEFT==res) || (DECODE_DONE_WELL==res)
+            // Here we have: (DECODE_HAS_DATA_LEFT==decode_res) || (DECODE_DONE_WELL==decode_res)
             // Remaining tells, how much is over (likely parts of next package)
             
             if (Remaining) {
@@ -918,13 +924,13 @@ fprintf(stderr, "size=%zu, res=%d, n_bytes=%zu", size, res, n_bytes );
             crc_ok = crc_check(buffer, eaten, &crc);
             fprintf(stderr, "CRC: %04X = %02X%02X [%s]\n", crc, buffer[eaten-2] & 0xFF, buffer[eaten-1] & 0xFF, crc_ok ? "OK" : "FAIL");
             if (crc_ok) {
-              size_prev = eaten;
-              memcpy(buffer_prev,buffer,eaten);
+                size_prev = eaten;
+                memcpy(buffer_prev,buffer,eaten);
             }
             if (crc_ok || args.ignore_crc) {
-              /* was not able to decode? then at least dump it */
-              dump_buffer(buffer, eaten, "\tDONE");
-              dump_buffer(buffer+eaten, Remaining, "\tNEXT");
+                /* was not able to decode? then at least dump it */
+                dump_buffer(buffer, eaten, "\tDONE");
+                //dump_buffer(buffer+eaten, Remaining, "\tNEXT");
             }
 
             write_packet_header(log_fp, size);
@@ -934,14 +940,17 @@ fprintf(stderr, "size=%zu, res=%d, n_bytes=%zu", size, res, n_bytes );
 
             fflush(log_fp);
 
-            if (DECODE_HAS_DATA_LEFT==res){
-              fprintf(stderr, "\tDECODE_HAS_DATA_LEFT length = %zu of %zu, move <- %zu to buffer start\n", Remaining, size, eaten);
-              memmove(buffer,buffer+eaten,Remaining);
-              size = Remaining;
+            if (DECODE_HAS_DATA_LEFT == decode_res) {
+                fprintf(stderr, "\tDECODE_HAS_DATA_LEFT length = %zu of %zu, move <- %zu to buffer start\n", Remaining, size, eaten);
+                memmove(buffer,buffer+eaten,Remaining);
+                size = Remaining;
             } else {
-              size = 0;
+                size = 0;
             }
-        } // end-if of buffer timed out (unreliable on some hardware) || buffer is too full.
+        } else { // end-if of buffer timed out (unreliable on some hardware) || buffer is too full.
+            print_timestamp( t0, t1, -1 );
+            fprintf(stderr, "NO new block - size=%zu, res=%d, n_bytes=%zu\n", size, res, n_bytes );
+        }
     } // while nothing got read
   }
   catch(std::exception &e)
