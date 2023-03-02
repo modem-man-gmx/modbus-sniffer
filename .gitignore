@@ -6,3 +6,5 @@ sniffer
 /*.o
 /*.stackdump
 Debug
+/modbus-sniffer/modbus-sniffer.txt
+*.mk
