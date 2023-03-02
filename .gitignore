@@ -5,3 +5,4 @@ sniffer
 /decode_breeder
 /*.o
 /*.stackdump
+Debug
