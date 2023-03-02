@@ -16,17 +16,13 @@
 #include <string.h>
 #include <signal.h>
 #include <stdbool.h>
-#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
-#ifdef __linux__
-#include <sys/ioctl.h>
-#include <linux/serial.h>
-#endif /*__linux__*/
-
 #include "read_modbus_definitions.h"
+#include "ttyuart.hpp"
+#include "pcap_writer.hpp"
 
 #define DIE(err) do { perror(err); exit(EXIT_FAILURE); } while (0)
 
@@ -69,22 +65,6 @@ struct option long_options[] = {
 
 volatile int rotate_log = 1;
 
-struct pcap_global_header {
-    uint32_t magic_number;  /* magic number */
-    uint16_t version_major; /* major version number */
-    uint16_t version_minor; /* minor version number */
-    int32_t  thiszone;      /* GMT to local correction */
-    uint32_t sigfigs;       /* accuracy of timestamps */
-    uint32_t snaplen;       /* max length of captured packets, in octets */
-    uint32_t network;       /* data link type */
-} __attribute__((packed));
-
-struct pcap_packet_header {
-    uint32_t ts_sec;   /* timestamp seconds */
-    uint32_t ts_usec;  /* timestamp microseconds */
-    uint32_t incl_len; /* number of octets of packet saved in file */
-    uint32_t orig_len; /* actual length of packet */
-} __attribute__((packed));
 
 uint16_t crc16_table[] = {
     0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
@@ -140,59 +120,6 @@ int crc_check(uint8_t *buffer, int length, uint16_t* return_crc)
    return valid_crc;
 }
 
-/* https://stackoverflow.com/questions/47311500/how-to-efficiently-convert-baudrate-from-int-to-speed-t */
-speed_t get_baud(uint32_t baud)
-{
-    switch (baud) {
-    case 300:
-    	return B300;
-    case 600:
-    	return B600;
-    case 1200:
-    	return B1200;
-    case 1800:
-    	return B1800;
-    case 2400:
-    	return B2400;
-    case 4800:
-    	return B4800;
-    case 9600:
-    	return B9600;
-    case 19200:
-        return B19200;
-    case 38400:
-        return B38400;
-    case 57600:
-        return B57600;
-    case 115200:
-        return B115200;
-    case 230400:
-        return B230400;
-    case 460800:
-        return B460800;
-    case 500000:
-        return B500000;
-    case 576000:
-        return B576000;
-    case 921600:
-        return B921600;
-    case 1000000:
-        return B1000000;
-    case 1152000:
-        return B1152000;
-    case 1500000:
-        return B1500000;
-    case 2000000:
-        return B2000000;
-    case 2500000:
-        return B2500000;
-    case 3000000:
-        return B3000000;
-    default:
-        DIE("ERROR: Baudrate not supported\n");
-	return -1;
-    }
-}
 
 void usage(FILE *fp, char *progname, int exit_code)
 {
@@ -296,145 +223,8 @@ void parse_args(int argc, char **argv, struct cli_args *args)
       fprintf(stderr, "reading register definition from: %s\n", args->definition_cfg );
 }
 
-/* https://blog.mbedded.ninja/programming/operating-systems/linux/linux-serial-ports-using-c-cpp */
-void configure_serial_port(int fd, const struct cli_args *args)
-{
-    struct termios tty;
 
-#ifdef __linux__
-    if (args->low_latency) {
-        struct serial_struct serial;
 
-        if (ioctl(fd, TIOCGSERIAL, &serial) < 0) {
-            perror("error getting serial struct. Low latency mode not supported");
-        } else {
-            serial.flags |= ASYNC_LOW_LATENCY;
-            if (ioctl(fd, TIOCSSERIAL, &serial) < 0)
-                perror("error setting serial struct. Low latency mode not supported");
-        }
-    }
-#endif /*__linux__*/
-
-    if (tcgetattr(fd, &tty) < 0)
-        DIE("tcgetattr");
-
-    /* set parity */
-    if (args->parity == 'N')
-        tty.c_cflag &= ~PARENB;
-
-    if (args->parity == 'E')
-        tty.c_cflag |= PARENB;
-
-    if (args->parity == 'O')
-        tty.c_cflag |= PARODD | PARENB;
-
-    /* set stop bits */
-    if (args->stop_bits == 2)
-        tty.c_cflag |= CSTOPB;
-    else
-        tty.c_cflag &= ~CSTOPB;
-
-    /* set bits */
-    tty.c_cflag &= ~CSIZE;
-
-    switch (args->bits) {
-    case 5: tty.c_cflag |= CS5; break;
-    case 6: tty.c_cflag |= CS6; break;
-    case 7: tty.c_cflag |= CS7; break;
-    default: tty.c_cflag |= CS8; break;
-    }
-
-    /* disable RTS/CTS hardware flow control */
-    tty.c_cflag &= ~CRTSCTS;
-
-    /* turn on READ & ignore ctrl lines (CLOCAL = 1) */
-    tty.c_cflag |= CREAD | CLOCAL;
-
-    /* disable canonical mode */
-    tty.c_lflag &= ~ICANON;
-
-    /* disable echo */
-    tty.c_lflag &= ~ECHO;
-
-    /* disable erasure */
-    tty.c_lflag &= ~ECHOE;
-
-    /* disable new-line echo */
-    tty.c_lflag &= ~ECHONL;
-
-    /* disable interpretation of INTR, QUIT and SUSP */
-    tty.c_lflag &= ~ISIG;
-
-    /* turn off s/w flow ctrl */
-    tty.c_iflag &= ~(IXON | IXOFF | IXANY);
-
-    /* disable any special handling of received bytes */
-    tty.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL);
-
-    /* prevent special interpretation of output bytes (e.g. newline chars) */
-    tty.c_oflag &= ~OPOST;
-
-    /* prevent conversion of newline to carriage return/line feed */
-    tty.c_oflag &= ~ONLCR;
-
-#if defined(__linux__) || defined(__CYGWIN__)
-    /* prevent conversion of tabs to spaces */
-    tty.c_oflag &= ~XTABS; // on GNU/Linux systems it is available as XTABS.
-#else
-    /* prevent conversion of tabs to spaces */
-    tty.c_oflag &= ~OXTABS; // This bit exists only on BSD systems and GNU/Hurd systems; on GNU/Linux systems it is available as XTABS.
-
-    /* prevent removal of C-d chars (0x004) in output */
-    tty.c_oflag &= ~ONOEOT; //  This bit exists only on BSD systems and GNU/Hurd systems.
-#endif
-
-    /* how much to wait for a read */
-    tty.c_cc[VTIME] = 0;
-
-    /* minimum read size: 1 byte */
-    tty.c_cc[VMIN] = 0;
-
-    /* set port speed */
-    cfsetispeed(&tty, get_baud(args->speed));
-    cfsetospeed(&tty, get_baud(args->speed));
-
-    if (tcsetattr(fd, TCSANOW, &tty) < 0)
-        DIE("tcsetattr");
-}
-
-void write_global_header(FILE *fp)
-{
-    struct pcap_global_header header = {
-        /*.magic_number =*/ 0xa1b2c3d4,
-        /*.version_major =*/ 2,
-        /*.version_minor =*/ 4,
-        /*.thiszone =*/ 0,
-        /*.sigfigs =*/ 0,
-        /*.snaplen =*/ 1024,
-        /*.network =*/ 147 /* custom USER */
-    };
-
-    if (fwrite(&header, sizeof header, 1, fp) != 1)
-        DIE("write pcap");
-}
-
-void write_packet_header(FILE *fp, int length)
-{
-    struct timespec t;
-    struct pcap_packet_header header;
-
-    clock_gettime(CLOCK_REALTIME, &t);
-
-    header.ts_sec = t.tv_sec;
-    header.ts_usec = t.tv_nsec / 1000;
-    header.incl_len = length;
-    header.orig_len = length;
-
-    if (fwrite(&header, sizeof header, 1, fp) != 1)
-        DIE("write pcap");
-
-    fflush(fp);
-}
 
 long get_frame_gap( const struct cli_args *args )
 {
@@ -513,28 +303,6 @@ void print_timestamp( const struct timespec t0, const struct timespec t1, int as
 
 
 
-
-FILE *open_logfile(const char *path)
-{
-    FILE *fp;
-    if (!path || strcmp(path, "-") == 0) {
-        fp = stdout;
-        if (isatty(1)) {
-            fprintf(stderr, "capture file is binary, redirect it to a file or use the --output option!\n");
-            exit(EXIT_FAILURE);
-        }
-    } else {
-        fp = fopen(path, "wb+");
-        if (!fp) {
-            DIE("cannot open output file");
-        }
-    }
-
-    write_global_header(fp);
-
-    return fp;
-}
-
 void signal_handler(int) // handler for SIGUSR1: just create a new trace file
 {
     rotate_log = 1;
@@ -585,7 +353,7 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
     size_t Idx=0;
     ModbusCommand_t Cmd;
     ModbusRegister_t Reg;
-    
+
 	fprintf(stderr, "\tDECODE: ");
 
     /* === Block A, common for Request and Answer === */
@@ -761,7 +529,7 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
       uint8_t CrcLo = buffer[Idx+1];
       uint16_t CRC = (CrcHi << 8) + CrcLo;
       fprintf(stderr, "[%04X]\n", CRC);
-      
+
       // Answer Package done, next is response? Or vvs?
       isAnswer = (isAnswer) ? 0 : 1;
       length-=2;Idx++;
@@ -780,20 +548,19 @@ int decode_buffer(uint8_t *buffer, uint16_t length,
 }
 
 
-int main(int argc, char **argv)
+int main( int argc, char **argv )
 {
   try
   {
     struct cli_args args = {};
-    int port, n_bytes = -1, res, n_packets = 0;
+    int n_bytes = -1, res, n_packets = 0;
     size_t size = 0, size_prev = 0;
     uint8_t buffer[MODBUS_MAX_PACKET_SIZE];
     uint8_t buffer_prev[MODBUS_MAX_PACKET_SIZE];
-    struct timeval timeout;
-    fd_set set;
-    FILE *log_fp = NULL;
 
-    signal(SIGUSR1, signal_handler);
+#   if !defined( __MINGW32__ ) && !defined( __MINGW64__ )
+    signal( SIGUSR1, signal_handler ); // not emulated on MinGW, not existing in Windows
+#   endif
 
     parse_args(argc, argv, &args);
 
@@ -816,12 +583,17 @@ int main(int argc, char **argv)
     } else {
       fprintf(stderr, "  no register decoding wanted.\n" );
     }
- 
 
-    if ((port = open(args.serial_port, O_RDONLY)) < 0)
-        DIE("open port");
+    TtyUart port;
+    try
+    {
+      port.open( args.serial_port );
+      port.configure( args.speed, args.bits, args.parity, args.stop_bits, args.low_latency );
+    } catch(...)
+    {
+      DIE("open port");
+    }
 
-    configure_serial_port(port, &args);
 
     int isAnswer=0, Loops=0;
     uint16_t LastRegNum=0;
@@ -835,49 +607,54 @@ int main(int argc, char **argv)
 
     long modbus_gap_ms = get_frame_gap( &args );
 
+    PcapWriter pcap( args.output_file );
+
     while (n_bytes != 0) {
-        if (rotate_log || !log_fp) {
-            if (log_fp) {
-                fclose(log_fp);
-            }
-            log_fp = open_logfile(args.output_file);
+        if (rotate_log || !pcap.is_open()) {
+            pcap.close();
+            pcap.open( args.output_file );
             rotate_log = 0;
         }
 
-        /* RTFM! these are overwritten after each select call and thus must be inizialized again */
-        FD_ZERO(&set);
-        FD_SET(port, &set);
-
-        /* also these maybe overwritten in Linux */
-        timeout.tv_sec = 0;
-        timeout.tv_usec = args.bytes_time_interval_us;
-        
         new_data=0;
 
-        if ((res = select(port + 1, &set, NULL, NULL, &timeout)) < 0 && errno != EINTR)
-            DIE("select");
+        try
+        {
+          res = port.wait( args.bytes_time_interval_us );
+        }
+        catch(...)
+        {
+          DIE("select");
+        };
 
-        /* there is something to read... if more than 32 Byte and using an USB/FTDI dongle, you'll likely get 32 byte chunks :-( */
-        if (res > 0) {
-            if ((n_bytes = read(port, buffer + size, MODBUS_MAX_PACKET_SIZE - size)) < 0)
-                DIE("read port");
+        if (res > 0)
+        {
+          /* there is something to read... if more than 32 Byte and using an USB/FTDI dongle, you'll likely get 32 byte chunks :-( */
+          try
+          {
+            n_bytes = port.read( buffer + size, MODBUS_MAX_PACKET_SIZE - size );
+          }
+          catch(...)
+          {
+            DIE("read port");
+          };
 
-            size += n_bytes;
-            if (n_bytes > 0) {
-                new_data=1;
-                clock_gettime(CLOCK_REALTIME, &t1);
-                elapsed_ms = get_elapsed_time( t0, t1 );
-                shortest_ms=get_shortest_time( elapsed_ms );
-                longest_ms =get_longest_time( elapsed_ms );
-                avrg_ms    =get_average_time( elapsed_ms );
-                
-                print_timestamp( t0, t1, -1 );
-                fprintf(stderr, "captured packet %d: len=%zu, t_min=%ld, t=%ld, t_max=%ld, t_avg=%ld, req=%ld\n"
-                              , n_packets, size
-                              , shortest_ms, elapsed_ms, longest_ms, avrg_ms
-                              , modbus_gap_ms );
-                t0 = t1;
-            }
+          size += n_bytes;
+          if (n_bytes > 0) {
+              new_data=1;
+              clock_gettime(CLOCK_REALTIME, &t1);
+              elapsed_ms = get_elapsed_time( t0, t1 );
+              shortest_ms=get_shortest_time( elapsed_ms );
+              longest_ms =get_longest_time( elapsed_ms );
+              avrg_ms    =get_average_time( elapsed_ms );
+
+              print_timestamp( t0, t1, -1 );
+              fprintf(stderr, "captured packet %d: len=%zu, t_min=%ld, t=%ld, t_max=%ld, t_avg=%ld, req=%ld\n"
+                            , n_packets, size
+                            , shortest_ms, elapsed_ms, longest_ms, avrg_ms
+                            , modbus_gap_ms );
+              t0 = t1;
+          }
         }
 
         if (DECODE_NEEDS_DATA == decode_res && !new_data) {
@@ -891,7 +668,7 @@ int main(int argc, char **argv)
             ++n_packets;
 
             print_timestamp( t0, t1, -1 );
-            fprintf(stderr, "GOT new block - size=%zu, res=%d, n_bytes=%zu\n", size, res, n_bytes );
+            fprintf(stderr, "GOT new block - size=%zu, res=%d, n_bytes=%d\n", size, res, n_bytes );
 
             if (n_packets % args.max_packet_per_capture == 0)
                 rotate_log = 1;
@@ -915,7 +692,7 @@ int main(int argc, char **argv)
 
             // Here we have: (DECODE_HAS_DATA_LEFT==decode_res) || (DECODE_DONE_WELL==decode_res)
             // Remaining tells, how much is over (likely parts of next package)
-            
+
             if (Remaining) {
                 fprintf(stderr, "\tDECODE_HAS_DATA_LEFT length = %zu\n", Remaining);
             }
@@ -933,12 +710,7 @@ int main(int argc, char **argv)
                 //dump_buffer(buffer+eaten, Remaining, "\tNEXT");
             }
 
-            write_packet_header(log_fp, size);
-
-            if (fwrite(buffer, 1, eaten, log_fp) != eaten)
-                DIE("write pcap");
-
-            fflush(log_fp);
+            pcap.write_packet( buffer, eaten );
 
             if (DECODE_HAS_DATA_LEFT == decode_res) {
                 fprintf(stderr, "\tDECODE_HAS_DATA_LEFT length = %zu of %zu, move <- %zu to buffer start\n", Remaining, size, eaten);
@@ -949,7 +721,7 @@ int main(int argc, char **argv)
             }
         } else { // end-if of buffer timed out (unreliable on some hardware) || buffer is too full.
             print_timestamp( t0, t1, -1 );
-            fprintf(stderr, "NO new block - size=%zu, res=%d, n_bytes=%zu\n", size, res, n_bytes );
+            fprintf(stderr, "NO new block - size=%zu, res=%d, n_bytes=%d\n", size, res, n_bytes );
         }
     } // while nothing got read
   }
